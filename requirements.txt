@@ -1,0 +1,5 @@
+# 執行單元測試只需要這一個
+pytest>=8.0
+
+# 建立資料表 / 使用 models.py 才需要
+SQLAlchemy>=2.0

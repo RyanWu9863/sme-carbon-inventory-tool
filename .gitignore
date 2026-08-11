@@ -1,0 +1,44 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# --- 虛擬環境 ---
+.venv/
+venv/
+env/
+
+# --- 測試與型別檢查快取 ---
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# --- 本機資料庫 ---
+# carbon.db 由 check_schema.py 產生，刪掉再跑一次即可重建，不需版控
+carbon.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# --- 環境變數（CARBON_DB_URL 等連線設定）---
+.env
+.env.*
+
+# --- Excel 開啟中產生的鎖定檔 ---
+~$*.xlsx
+~$*.xls
+
+# --- 編輯器與作業系統 ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- 內部規劃文件 ---
+# 含風險清單、團隊分工評估與「砍功能順序」，是給團隊看的，不是給評審或路人看的。
+# 若確定要一併公開，刪掉下面這一行再 git add 即可。
+專題執行計畫_v2.xlsx
