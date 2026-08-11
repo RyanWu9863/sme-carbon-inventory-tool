@@ -1,5 +1,8 @@
 # 碳盤查系統 — 安裝與測試
 
+對齊環境部「溫室氣體排放量清冊表單」的中小企業碳盤查工具。這一份講怎麼裝、怎麼跑；
+**做到哪一步、為什麼這樣設計、下一步做什麼，看 [PROGRESS.md](PROGRESS.md)。**
+
 ## 檔案該放哪
 
 下載的檔案要照這個結構擺，位置錯了 import 會失敗：
@@ -8,14 +11,17 @@
 carbon/                      ← 專案根目錄，名字隨你取
 ├── requirements.txt
 ├── check_schema.py
+├── 碳盤查試算表_v5.xlsx      ← 所有數字的基準，測試與種子資料都讀它
 ├── app/
 │   ├── __init__.py          ← 空檔案，但一定要有
 │   ├── db.py
 │   ├── models.py
-│   └── calculator.py
+│   ├── calculator.py
+│   └── seed.py
 └── tests/
     ├── __init__.py          ← 空檔案，但一定要有
-    └── test_calculator.py
+    ├── test_calculator.py
+    └── test_seed.py
 ```
 
 `__init__.py` 是兩個**完全空白**的檔案，Python 靠它辨認資料夾是套件。漏了會出現
@@ -72,20 +78,22 @@ python -m pytest tests/ -v
 
 ```
 ======================== test session starts ========================
-collected 17 items
+collected 28 items
 
 tests/test_calculator.py::test_derived_factor_matches_spreadsheet[TW-M-GASOLINE-OXI-2.270679] PASSED
 tests/test_calculator.py::test_ch4_uses_28_not_30 PASSED
 ...
-tests/test_calculator.py::test_totals_match_spreadsheet_table8 PASSED
-======================== 17 passed in 0.05s =========================
+tests/test_seed.py::test_every_fuel_matches_the_spreadsheet PASSED
+======================== 28 passed in 0.80s =========================
 ```
 
-**看到 `17 passed` 就對了。**
+**看到 `28 passed` 就對了。**
 
 只想看結果不看細節，把 `-v` 換成 `-q`。
 
-## 這 17 個測試在測什麼
+## 這 28 個測試在測什麼
+
+### `test_calculator.py` — 計算引擎（17 個）
 
 | 測試 | 驗證的事 |
 |---|---|
@@ -100,8 +108,25 @@ tests/test_calculator.py::test_totals_match_spreadsheet_table8 PASSED
 | `test_electricity_factor_not_double_counted` | 電力係數不會被重複乘 GWP |
 | `test_completeness_*` ×3 | 完整性檢查抓得到「無資料」與「缺月份」 |
 
-最重要的是 `test_totals_match_spreadsheet_table8`。它是 W2 的完成判準：
-**程式與試算表算出同一個數字**。
+### `test_seed.py` — 種子資料讀取（11 個）
+
+| 測試 | 驗證的事 |
+|---|---|
+| **`test_every_fuel_matches_the_spreadsheet`** | **全部 12 個燃料，程式重算與試算表 U 欄一致（最大差 4.4e-16）** |
+| `test_all_twelve_fuels_are_read` | 少讀一列不會有錯誤訊息，只會少一個燃料可選 |
+| `test_conversion_constant_agrees_with_the_code` | 4.1868E-9 在試算表與程式各寫一份，必須相同 |
+| `test_fuel_combustion_uses_methane_28` | 種子資料端也守住 28 而非 30 |
+| `test_gwp_table_has_the_four_gases` | GWP 表四種氣體齊全 |
+| `test_electricity_factors_are_per_year` | 113 年 0.474、112 年 0.494 |
+| `test_unpublished_electricity_year_is_reported_not_silently_dropped` | 114 年尚未公告，跳過但不無聲消失 |
+| `test_code_blocks_are_read_separately` | 三個代碼區塊並排在同一張表，不可讀混 |
+| `test_material_codes_cover_every_fuel` | 燃料的原燃物料代碼都在代碼表裡 |
+| `test_missing_workbook_says_what_to_do` | 找不到試算表時說明該怎麼辦 |
+| `test_moved_column_is_caught` | 欄位被搬動時擋在門口 |
+
+兩個最重要的是 `test_totals_match_spreadsheet_table8` 與
+`test_every_fuel_matches_the_spreadsheet`：**程式與試算表算出同一個數字**。
+試算表那邊是 Excel 公式，程式這邊是 Python，兩條路徑完全獨立。
 
 ## 建立資料表
 
@@ -118,15 +143,17 @@ python check_schema.py
 
 ## 只想跑測試的話
 
-`test_calculator.py` **只 import calculator.py**，不碰資料庫。所以：
+兩個測試檔都**不碰資料庫**，所以不用裝 SQLAlchemy：
 
 ```bash
-pip install pytest        # 這樣就夠，不用裝 SQLAlchemy
+pip install pytest openpyxl
 python -m pytest tests/ -q
 ```
 
-這不是巧合，是設計的結果 —— 計算引擎寫成純函式、不依賴資料庫，所以可以獨立測試。
-口試若被問「你怎麼確保計算正確」，這點可以直接拿來講。
+`test_calculator.py` 只 import `calculator.py`；`test_seed.py` 另外要 `openpyxl`
+來讀試算表。這不是巧合，是設計的結果 —— 計算引擎寫成純函式、種子資料讀取不寫任何
+檔案，兩者都不依賴資料庫，所以可以獨立測試。被問「你怎麼確保計算正確」時，這點可以
+直接拿來講。
 
 ## 常見錯誤
 
@@ -134,7 +161,10 @@ python -m pytest tests/ -q
 |---|---|
 | `ModuleNotFoundError: No module named 'app'` | 沒在專案根目錄執行，或缺 `__init__.py` |
 | `ModuleNotFoundError: No module named 'pytest'` | 忘了啟用虛擬環境，或沒 `pip install` |
+| `ModuleNotFoundError: No module named 'openpyxl'` | `test_seed.py` 要讀試算表，`pip install openpyxl` |
 | `ModuleNotFoundError: No module named 'sqlalchemy'` | 只跑測試不需要它；要跑 `check_schema.py` 才需安裝 |
+| `FileNotFoundError: 找不到試算表` | `碳盤查試算表_v5.xlsx` 不在專案根目錄 |
+| `SeedFormatError: ... 欄位順序可能被更動過` | 試算表的欄位被搬動，或換了不同版本的檔案 |
 | `SyntaxError` 出現在型別標註處 | Python 版本低於 3.10，請升級 |
 | 中文顯示成亂碼（Windows） | 終端機執行 `chcp 65001` 切換為 UTF-8 |
 
@@ -154,7 +184,8 @@ KCAL_TO_TJ = 4.1868e-9
 KCAL_TO_TJ = 4.1868e-8
 ```
 
-再跑一次測試，應該會看到 6 個測試失敗。改回來後全部通過。
+再跑一次測試，應該會看到 **8 個測試失敗**（`test_calculator.py` 6 個、`test_seed.py`
+2 個）。改回來後 28 個全部通過。
 
 **測試通過不代表程式對，但改壞了測試卻沒失敗，就一定有問題。**
 這個小實驗可以錄進 demo，展示你的驗證機制是有效的。
@@ -177,12 +208,9 @@ Get-ChildItem -Path app,tests -Filter __pycache__ -Recurse -Directory | Remove-I
 python -m pytest tests/ -q -p no:cacheprovider
 ```
 
-順帶一提：`__pycache__`、`.venv`、`carbon.db` 都不要進版控。建一個 `.gitignore`：
+`.gitignore` 已經建好了（`__pycache__`、`.venv`、`carbon.db`、`.pytest_cache` 都擋掉）。
 
-```
-__pycache__/
-*.pyc
-.venv/
-.pytest_cache/
-carbon.db
-```
+裡面還擋了兩類**不能進 public repo** 的東西，加檔案時留意：
+
+- 個人資料 —— 載具消費明細、發票明細（`載具*.csv`、`消費明細*.csv`、`data/private/`）
+- 官方表單原檔（`溫室氣體排放量清冊表單*.ods`）—— 版控裡放的是從它抽出來的代碼表 CSV

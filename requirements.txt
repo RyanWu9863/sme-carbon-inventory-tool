@@ -1,5 +1,8 @@
 # 執行單元測試只需要這一個
 pytest>=8.0
 
+# 讀取 碳盤查試算表_v5.xlsx，種子資料的來源（app/seed.py）
+openpyxl>=3.1
+
 # 建立資料表 / 使用 models.py 才需要
 SQLAlchemy>=2.0
