@@ -19,6 +19,8 @@ carbon/                      ← 專案根目錄，名字隨你取
 │   ├── calculator.py        ← 純函式計算引擎
 │   ├── service.py           ← 資料庫 ↔ 計算引擎
 │   ├── api.py               ← HTTP API（FastAPI）
+│   ├── static/
+│   │   └── index.html       ← 使用者介面，單一檔案無 build step
 │   └── seed.py
 ├── scripts/
 │   ├── __init__.py          ← 空檔案，但一定要有
@@ -97,7 +99,7 @@ python -m pytest tests/ -v
 
 ```
 ======================== test session starts ========================
-collected 110 items
+collected 115 items
 
 tests/test_calculator.py::test_derived_factor_matches_spreadsheet[TW-M-GASOLINE-OXI-2.270679] PASSED
 tests/test_calculator.py::test_ch4_uses_28_not_30 PASSED
@@ -105,14 +107,14 @@ tests/test_calculator.py::test_ch4_uses_28_not_30 PASSED
 tests/test_seed.py::test_every_fuel_matches_the_spreadsheet PASSED
 tests/test_codes.py::test_v5_codes_agree_with_the_official_table[material_codes-material_code] PASSED
 tests/test_import_seed.py::test_factors_survive_the_round_trip PASSED
-======================== 110 passed in 10.96s =========================
+======================== 115 passed in 9.26s =========================
 ```
 
-**看到 `110 passed` 就對了。**
+**看到 `115 passed` 就對了。**
 
 只想看結果不看細節，把 `-v` 換成 `-q`。
 
-## 這 110 個測試在測什麼
+## 這 115 個測試在測什麼
 
 ### `test_calculator.py` — 計算引擎（17 個）
 
@@ -218,7 +220,7 @@ tests/test_import_seed.py::test_factors_survive_the_round_trip PASSED
 
 只有一條路徑時，測試測的是「程式跟自己一致」，那證明不了什麼。
 
-### `test_api.py` — HTTP API（24 個）
+### `test_api.py` — HTTP API 與介面（29 個）
 
 | 測試 | 驗證的事 |
 |---|---|
@@ -325,13 +327,39 @@ python scripts/calc_demo.py
 少一張帳單，總量少一截，卻不會有任何錯誤訊息，除非有東西在檢查。這正是完整性
 檢查存在的理由，所以示範資料保留這個狀態。
 
-## 啟動 API
+## 啟動
 
 ```bash
 uvicorn app.api:app --reload
 ```
 
-開 <http://127.0.0.1:8000/docs> 就是可以直接點來試的 Swagger UI。
+| 網址 | 是什麼 |
+|---|---|
+| <http://127.0.0.1:8000/> | **使用者介面** —— 三個畫面：表三清冊、登錄活動數據、表八彙總 |
+| <http://127.0.0.1:8000/docs> | Swagger UI，每個端點都可以直接點來試 |
+
+介面是**單一 HTML 檔**（`app/static/index.html`），沒有 build step、不引用任何外部
+CDN。刻意不用 React／Vue：這個作品的重點在盤查邏輯與資料正確性，不在前端工程。
+多一個 build step 就多一個「在我電腦上跑得起來」的理由，而 demo 影片要能只靠一個
+網址播完，也要能離線播。
+
+有測試守著這件事（`test_ui_is_self_contained`）。
+
+### 介面在做什麼
+
+**表三 排放源清冊** —— 代碼一律附上名稱（`B001 燃氣台爐`，不是光一個 `B001`），
+因為官方表三本來就是兩欄並列，而看不懂的欄位使用者就會亂填。`筆數 0` 標紅，那正是
+完整性檢查會擋的。底下附代碼搜尋，因為 6,222 筆不可能做成下拉選單。
+
+**登錄活動數據** —— 資料品質選「推估」時，「推估依據」欄位標題會即時變成必填。
+**前端擋是為了體驗，後端照樣擋才是正確性的來源** —— 只靠前端擋的規則，任何人用
+curl 就繞過去了。送出後立刻顯示完整的 `calc_trace`。
+
+**表八 排放量彙總** —— 依排放型式／範疇／氣體三種拆法、資料品質揭露、完整性檢查。
+`uncalculated_count > 0` 時會顯示「尚有 N 筆未計算」，因為「總量 0」跟「還沒算」
+在畫面上長得一模一樣。
+
+## API
 
 | 方法 | 路徑 | 用途 |
 |---|---|---|
@@ -450,7 +478,7 @@ KCAL_TO_TJ = 4.1868e-8
 | `test_seed.py` | 2 |
 | `test_import_seed.py` | 1 |
 
-改回來後 110 個全部通過。
+改回來後 115 個全部通過。
 
 **一個常數改壞，從純函式一路紅到 HTTP 回應。** 那正是分層測試的用意 —— 每一層都
 獨立對照試算表，所以錯誤在哪一層被引入都跑不掉。

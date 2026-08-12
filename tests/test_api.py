@@ -140,6 +140,43 @@ def test_sources_match_table3(client):
     assert by_no["S03"]["record_count"] == 0                 # 清冊有，資料沒有
 
 
+def test_sources_resolve_code_names(client):
+    """
+    代碼旁邊要附名稱。官方表三本來就是「代碼＋名稱」兩欄並列 —— 畫面上只顯示
+    `9999` 沒有人看得懂，而看不懂的欄位使用者就會亂填。
+    """
+    by_no = {s["source_no"]: s for s in client.get("/orgs/1/sources").json()}
+
+    assert by_no["S04"]["equipment_name"] == "燃氣台爐"
+    assert by_no["S04"]["material_name"] == "天然氣"
+    assert by_no["S01"]["equipment_name"] == "其他未歸類設施"
+    assert by_no["S01"]["material_name"] == "外購台電電力"
+    assert by_no["S02"]["process_name"] == "交通運輸活動"
+
+
+def test_source_list_does_not_scale_queries_with_rows(client, db):
+    """
+    名稱解析是一次查完，不是每列各查一次。
+
+    5 個排放源看不出差別，但這裡放著是為了擋住「在迴圈裡查資料庫」那種寫法 ——
+    真的事業有幾十個排放源時，那會變成上百次查詢。
+    """
+    statements = []
+    from sqlalchemy import event
+
+    def record(conn, cursor, statement, *args):
+        statements.append(statement)
+
+    event.listen(db.bind, "before_cursor_execute", record)
+    try:
+        client.get("/orgs/1/sources")
+    finally:
+        event.remove(db.bind, "before_cursor_execute", record)
+
+    selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+    assert len(selects) <= 6, f"查了 {len(selects)} 次，應該是固定次數：\n" + "\n".join(selects)
+
+
 # --------------------------------------------------------------------------
 # 表八
 # --------------------------------------------------------------------------
@@ -349,6 +386,42 @@ def test_unknown_code_table_is_404(client):
     resp = client.get("/codes/nope")
     assert resp.status_code == 404
     assert "material" in resp.json()["detail"]
+
+
+# --------------------------------------------------------------------------
+# 介面
+# --------------------------------------------------------------------------
+
+def test_root_serves_the_ui(client):
+    """
+    `/` 要回得出介面。單一 HTML 檔，沒有 build step —— 這個測試同時也是在確認
+    檔案真的被打包在該在的位置（app/static/index.html），而不是只有我這台電腦有。
+    """
+    resp = client.get("/")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    assert "碳盤查工具" in resp.text
+    assert "<!DOCTYPE html>" in resp.text
+
+
+def test_ui_is_self_contained(client):
+    """
+    介面不可依賴外部 CDN。
+
+    這個工具的使用情境是中小企業的辦公室電腦，網路不一定通得到外面；而且
+    demo 影片要能離線播完。CSS 與 JS 都必須內嵌。
+    """
+    html = client.get("/").text
+
+    for pattern in ("src=\"http", "href=\"http", "//cdn.", "unpkg.com", "jsdelivr"):
+        assert pattern not in html, f"介面引用了外部資源：{pattern}"
+
+
+def test_ui_is_not_in_the_openapi_schema(client):
+    """`/` 是給人看的，不該混進 API 文件。"""
+    paths = client.get("/openapi.json").json()["paths"]
+    assert "/" not in paths
 
 
 def test_factors_list_is_the_twelve_fuels(client):

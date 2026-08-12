@@ -25,9 +25,10 @@ HTTP 狀態碼分不出「係數還沒公告」跟「係數編號打錯」，但
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path as FilePath
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -78,6 +79,27 @@ def _get_org(db: Session, org_id: int) -> Organization:
 
 
 # --------------------------------------------------------------------------
+# 介面
+# --------------------------------------------------------------------------
+
+_UI_FILE = FilePath(__file__).resolve().parent / "static" / "index.html"
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    """
+    使用者介面。單一 HTML 檔，沒有 build step。
+
+    刻意不用 React／Vue：這個作品的重點在盤查邏輯與資料正確性，不在前端工程。
+    多一個 build step，就多一個「在我電腦上跑得起來」的理由 —— demo 影片要能
+    只靠一個網址播完。
+    """
+    if not _UI_FILE.exists():
+        raise HTTPException(status_code=404, detail=f"找不到介面檔案：{_UI_FILE}")
+    return FileResponse(_UI_FILE, media_type="text/html; charset=utf-8")
+
+
+# --------------------------------------------------------------------------
 # 輸出格式
 # --------------------------------------------------------------------------
 
@@ -93,15 +115,24 @@ class OrgOut(BaseModel):
 
 
 class SourceOut(BaseModel):
-    """表三一列。"""
+    """
+    表三一列。
+
+    代碼旁邊一律附上名稱。官方表三本來就是「代碼＋名稱」兩欄並列，
+    只回 `9999` 而不回「其他未歸類設施」的話，畫面上沒有人看得懂，
+    而看不懂的欄位使用者就會亂填。
+    """
 
     source_no: str
     name: str
     direct_indirect: str
     emission_type: str
     process_code: str | None = None
+    process_name: str | None = None
     equipment_code: str | None = None
+    equipment_name: str | None = None
     material_code: str | None = None
+    material_name: str | None = None
     factor_key: str | None = None
     active: bool
     record_count: int
@@ -270,6 +301,15 @@ def get_org(org_id: int, db: Session = Depends(get_db)):
     return _org_out(_get_org(db, org_id))
 
 
+def _name_lookup(db: Session, model, codes: set[str]) -> dict[str, str]:
+    """一次查完，不要在迴圈裡逐筆查資料庫。"""
+    codes = {c for c in codes if c}
+    if not codes:
+        return {}
+    rows = db.scalars(select(model).where(model.code.in_(codes))).all()
+    return {r.code: r.name for r in rows}
+
+
 @app.get("/orgs/{org_id}/sources", response_model=list[SourceOut], tags=["表三 排放源"])
 def list_sources(org_id: int, db: Session = Depends(get_db)):
     org = _get_org(db, org_id)
@@ -277,17 +317,30 @@ def list_sources(org_id: int, db: Session = Depends(get_db)):
         select(EmissionSource).where(EmissionSource.org_id == org.id)
         .order_by(EmissionSource.source_no)
     ).all()
+
+    processes = _name_lookup(db, ProcessCode, {s.process_code for s in sources})
+    equipment = _name_lookup(db, EquipmentCode, {s.equipment_code for s in sources})
+    materials = _name_lookup(db, MaterialCode, {s.material_code for s in sources})
+
+    counts = dict(db.execute(
+        select(ActivityRecord.source_id, func.count())
+        .group_by(ActivityRecord.source_id)
+    ).all())
+
     return [
         SourceOut(
             source_no=s.source_no, name=s.name,
             direct_indirect=s.direct_indirect.value,
             emission_type=s.emission_type.value,
-            process_code=s.process_code, equipment_code=s.equipment_code,
-            material_code=s.material_code, factor_key=s.factor_key,
+            process_code=s.process_code,
+            process_name=processes.get(s.process_code),
+            equipment_code=s.equipment_code,
+            equipment_name=equipment.get(s.equipment_code),
+            material_code=s.material_code,
+            material_name=materials.get(s.material_code),
+            factor_key=s.factor_key,
             active=bool(s.active), note=s.note,
-            record_count=db.scalar(
-                select(func.count()).select_from(ActivityRecord)
-                .where(ActivityRecord.source_id == s.id)),
+            record_count=counts.get(s.id, 0),
         )
         for s in sources
     ]

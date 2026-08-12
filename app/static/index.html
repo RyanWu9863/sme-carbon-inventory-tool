@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>碳盤查工具</title>
+<style>
+  :root {
+    --bg: #f6f7f5; --card: #fff; --ink: #1c1f1b; --muted: #6b7280;
+    --line: #dfe3dc; --accent: #2f6b4f; --accent-soft: #e8f1eb;
+    --warn: #8a6100; --warn-soft: #fdf3dc; --err: #a12d2d; --err-soft: #fbeaea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a; --card: #1c2024; --ink: #e8eae6; --muted: #9aa3a8;
+      --line: #2e343a; --accent: #6bbd92; --accent-soft: #1d2f26;
+      --warn: #e0b355; --warn-soft: #322a17; --err: #e08585; --err-soft: #331d1d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.6 "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
+  }
+  header {
+    background: var(--card); border-bottom: 1px solid var(--line);
+    padding: 14px 20px; position: sticky; top: 0; z-index: 10;
+  }
+  .bar { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  h1 { font-size: 17px; margin: 0; font-weight: 650; }
+  .org { color: var(--muted); font-size: 13px; }
+  nav { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+  nav button {
+    border: 1px solid var(--line); background: transparent; color: var(--ink);
+    padding: 6px 14px; border-radius: 999px; cursor: pointer; font-size: 14px;
+    font-family: inherit;
+  }
+  nav button[aria-selected="true"] {
+    background: var(--accent); border-color: var(--accent); color: #fff;
+  }
+  main { max-width: 1000px; margin: 0 auto; padding: 20px; }
+  section[hidden] { display: none; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px; margin-bottom: 16px;
+  }
+  h2 { font-size: 15px; margin: 0 0 4px; font-weight: 650; }
+  .hint { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; letter-spacing: .04em; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .scroll { overflow-x: auto; }
+  .tag {
+    display: inline-block; padding: 1px 8px; border-radius: 999px;
+    font-size: 12px; background: var(--accent-soft); color: var(--accent);
+  }
+  .tag.warn { background: var(--warn-soft); color: var(--warn); }
+  .tag.err  { background: var(--err-soft);  color: var(--err); }
+  .code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; }
+  .muted { color: var(--muted); }
+  .big { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+  .tile { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .tile .k { font-size: 12px; color: var(--muted); }
+  .tile .v { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  label { display: block; font-size: 13px; margin: 12px 0 4px; font-weight: 600; }
+  input, select, textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--bg); color: var(--ink);
+    font: inherit; font-size: 14px;
+  }
+  textarea { min-height: 62px; resize: vertical; }
+  .row { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+  button.go {
+    margin-top: 18px; background: var(--accent); color: #fff; border: 0;
+    padding: 10px 22px; border-radius: 7px; cursor: pointer;
+    font: inherit; font-weight: 600;
+  }
+  button.go:disabled { opacity: .5; cursor: not-allowed; }
+  .msg { margin-top: 14px; padding: 12px 14px; border-radius: 7px; font-size: 14px; }
+  .msg.ok  { background: var(--accent-soft); color: var(--accent); }
+  .msg.bad { background: var(--err-soft);    color: var(--err); }
+  .msg .code-label {
+    font-family: ui-monospace, monospace; font-size: 11px; opacity: .75;
+    display: block; margin-bottom: 3px;
+  }
+  pre {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    padding: 12px; overflow-x: auto; font-size: 12px; line-height: 1.5;
+    white-space: pre-wrap; margin: 10px 0 0;
+  }
+  .req::after { content: " ＊必填"; color: var(--err); font-weight: 400; font-size: 11px; }
+  .search-wrap { position: relative; }
+  .results {
+    border: 1px solid var(--line); border-radius: 6px; margin-top: 8px;
+    max-height: 240px; overflow-y: auto;
+  }
+  .results div { padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .results div:last-child { border-bottom: 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="bar">
+    <h1>碳盤查工具</h1>
+    <span class="org" id="orgline">載入中…</span>
+  </div>
+  <nav>
+    <button id="tab-sources" aria-selected="true">表三 排放源清冊</button>
+    <button id="tab-entry"   aria-selected="false">登錄活動數據</button>
+    <button id="tab-summary" aria-selected="false">表八 排放量彙總</button>
+  </nav>
+</header>
+
+<main>
+
+<!-- ── 表三 ───────────────────────────────────────────── -->
+<section id="view-sources">
+  <div class="card">
+    <h2>排放源清冊</h2>
+    <p class="hint">
+      代碼一律附上名稱 —— 官方表三本來就是兩欄並列。
+      <strong>筆數 0 代表清冊上列了這個排放源，卻一筆單據都沒有</strong>，
+      那是完整性檢查會擋下來的。
+    </p>
+    <div class="scroll"><table id="sources"></table></div>
+  </div>
+
+  <div class="card">
+    <h2>查官方代碼</h2>
+    <p class="hint">
+      原(燃)物料有 6,222 筆，不可能做成下拉選單，只能搜尋。
+      注意官方是照<strong>物品</strong>分類不是照燃料 —— 搜「柴油」會同時搜到
+      「柴油」與「船用柴油主機」。
+    </p>
+    <div class="row">
+      <div>
+        <label for="kind">代碼表</label>
+        <select id="kind">
+          <option value="material">原(燃)物料（附表七）</option>
+          <option value="equipment">設備（附表六）</option>
+          <option value="process">製程（附表五）</option>
+        </select>
+      </div>
+      <div>
+        <label for="q">搜尋代碼或名稱</label>
+        <input id="q" placeholder="例如：柴油、B00、鍋爐">
+      </div>
+    </div>
+    <p class="hint" id="searchinfo" style="margin-top:12px"></p>
+    <div class="results" id="results" hidden></div>
+  </div>
+</section>
+
+<!-- ── 登錄 ───────────────────────────────────────────── -->
+<section id="view-entry" hidden>
+  <div class="card">
+    <h2>登錄一筆活動數據</h2>
+    <p class="hint">
+      送出後<strong>立刻計算</strong>。推估沒填依據、跨年帳單標成實測，都會當場擋下來，
+      而不是等到產生報告才一次爆出。
+    </p>
+
+    <label for="src">排放源</label>
+    <select id="src"></select>
+
+    <div class="row">
+      <div><label for="ps">期間起</label><input id="ps" type="date" value="2024-05-01"></div>
+      <div><label for="pe">期間迄</label><input id="pe" type="date" value="2024-05-31"></div>
+    </div>
+    <p class="hint" style="margin:6px 0 0">
+      期間跨出盤查年度時，系統會依天數自動分攤，不必自己算。
+    </p>
+
+    <div class="row">
+      <div><label for="qty">原始活動數據</label>
+        <input id="qty" type="number" step="any" min="0" value="100">
+      </div>
+      <div><label for="unit">單位</label>
+        <select id="unit">
+          <option>立方公尺</option><option>度</option><option>公升</option>
+          <option>公斤</option><option>公秉</option><option>公噸</option>
+        </select>
+      </div>
+    </div>
+    <p class="hint" style="margin:6px 0 0">填單據上印的原始數字，不是分攤後的。</p>
+
+    <div class="row">
+      <div><label for="dq">資料品質</label>
+        <select id="dq"><option>實測</option><option>推估</option></select>
+      </div>
+      <div><label for="ev">佐證類型</label>
+        <select id="ev">
+          <option>瓦斯帳單</option><option>電費單</option><option>電子發票</option>
+          <option>載具CSV</option><option>紙本發票OCR</option><option>手動輸入</option>
+        </select>
+      </div>
+    </div>
+
+    <label for="ref">佐證編號</label>
+    <input id="ref" placeholder="發票號碼、帳單期別">
+
+    <label for="basis" id="basislabel">推估依據</label>
+    <textarea id="basis" placeholder="說明怎麼推的。例如：發票僅有金額，以當期油價回推"></textarea>
+
+    <button class="go" id="submit">送出並計算</button>
+    <div id="entrymsg"></div>
+  </div>
+</section>
+
+<!-- ── 表八 ───────────────────────────────────────────── -->
+<section id="view-summary" hidden>
+  <div class="card">
+    <h2>年度排放總量</h2>
+    <p class="hint" id="pending"></p>
+    <div class="big" id="total">—</div>
+    <div class="muted" style="font-size:13px">tCO2e</div>
+    <button class="go" id="recalc">重新計算</button>
+  </div>
+
+  <div class="card">
+    <h2>依排放型式</h2>
+    <p class="hint">
+      依表三的「排放型式」拆分，不是依燃料 —— 柴油在這個案例裡同時是固定燃燒
+      （備用發電機）與移動燃燒（公務車）。v5 試算表把範疇一全掛在「固定燃燒」，
+      表八自己註明程式版該拆開。
+    </p>
+    <table id="bytype"></table>
+  </div>
+
+  <div class="card">
+    <h2>依範疇與氣體</h2>
+    <div class="grid" id="scopes"></div>
+    <table id="bygas" style="margin-top:14px"></table>
+    <p class="hint" style="margin:10px 0 0">
+      試算表把 100% 都算成 CO2，實際上燃料燃燒會排 CH4 與 N2O（每單位係數裡本來就含）。
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>資料品質揭露</h2>
+    <p class="hint">報告必列。占比算的是<strong>排放量</strong>，不是筆數。</p>
+    <div class="grid" id="quality"></div>
+  </div>
+
+  <div class="card">
+    <h2>完整性檢查</h2>
+    <p class="hint">
+      少一張帳單，總量少一截，卻不會有任何錯誤訊息 —— 除非有東西在檢查。
+    </p>
+    <div id="issues"></div>
+  </div>
+</section>
+
+</main>
+
+<script>
+const ORG = 1;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const n6 = v => Number(v).toFixed(6);
+
+async function call(path, options) {
+  const res = await fetch(path, options);
+  const body = res.status === 204 ? null : await res.json();
+  if (!res.ok) throw { status: res.status, body };
+  return body;
+}
+
+/* 後端回兩種錯誤形狀，前端都要認得：
+     {"error": {"code", "message"}}  服務層擋下的業務規則
+     {"detail": ...}                 FastAPI/Pydantic 擋下的型別或路由問題   */
+function describe(err) {
+  const b = err.body || {};
+  if (b.error) return { code: b.error.code, message: b.error.message };
+  if (typeof b.detail === "string") return { code: null, message: b.detail };
+  if (Array.isArray(b.detail)) {
+    return {
+      code: "validation",
+      message: b.detail.map(d => `${d.loc?.slice(1).join(".")}：${d.msg}`).join("；"),
+    };
+  }
+  return { code: null, message: `HTTP ${err.status}` };
+}
+
+/* ── 分頁 ── */
+const TABS = { sources: "view-sources", entry: "view-entry", summary: "view-summary" };
+function goto(name) {
+  for (const [key, view] of Object.entries(TABS)) {
+    $(view).hidden = key !== name;
+    $("tab-" + key).setAttribute("aria-selected", String(key === name));
+  }
+  if (name === "summary") loadSummary();
+  if (name === "sources") loadSources();
+}
+for (const key of Object.keys(TABS)) $("tab-" + key).onclick = () => goto(key);
+
+/* ── 表三 ── */
+async function loadSources() {
+  const rows = await call(`/orgs/${ORG}/sources`);
+  $("sources").innerHTML = `
+    <tr><th>編號</th><th>名稱</th><th>直接/間接</th><th>排放型式</th>
+        <th>設備</th><th>原(燃)物料</th><th>係數編號</th><th class="num">筆數</th></tr>` +
+    rows.map(s => {
+      const zero = s.record_count === 0;
+      return `<tr>
+        <td class="code">${esc(s.source_no)}</td>
+        <td>${esc(s.name)}</td>
+        <td>${esc(s.direct_indirect)}</td>
+        <td><span class="tag">${esc(s.emission_type)}</span></td>
+        <td><span class="code">${esc(s.equipment_code)}</span> ${esc(s.equipment_name)}</td>
+        <td><span class="code">${esc(s.material_code)}</span> ${esc(s.material_name)}</td>
+        <td class="code">${esc(s.factor_key)}</td>
+        <td class="num">${zero
+          ? '<span class="tag err">0 筆</span>'
+          : s.record_count}</td>
+      </tr>`;
+    }).join("");
+
+  const sel = $("src");
+  const keep = sel.value;
+  sel.innerHTML = rows.map(s =>
+    `<option value="${esc(s.source_no)}">${esc(s.source_no)}　${esc(s.name)}　`
+    + `（${esc(s.emission_type)}）</option>`).join("");
+  if (keep) sel.value = keep;
+}
+
+/* ── 代碼搜尋 ── */
+let searchTimer;
+function search() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(async () => {
+    const q = $("q").value.trim();
+    const kind = $("kind").value;
+    const url = `/codes/${kind}?limit=50` + (q ? `&q=${encodeURIComponent(q)}` : "");
+    const body = await call(url);
+    $("searchinfo").textContent = body.truncated
+      ? `符合 ${body.total.toLocaleString()} 筆，只顯示前 ${body.returned} 筆 —— 請把關鍵字再細一點`
+      : `符合 ${body.total.toLocaleString()} 筆，已全部顯示`;
+    $("results").hidden = body.items.length === 0;
+    $("results").innerHTML = body.items.map(i =>
+      `<div><span class="code">${esc(i.code)}</span>　${esc(i.name)}</div>`).join("");
+  }, 200);
+}
+$("q").oninput = search;
+$("kind").onchange = search;
+
+/* ── 登錄 ── */
+/* 推估依據前端先擋一次是為了體驗，後端照樣會擋 —— 那才是正確性的來源。
+   只靠前端擋的規則，任何人用 curl 就繞過去了。 */
+function syncBasis() {
+  const estimated = $("dq").value === "推估";
+  $("basislabel").className = estimated ? "req" : "";
+  $("basis").required = estimated;
+}
+$("dq").onchange = syncBasis;
+
+$("submit").onclick = async () => {
+  const btn = $("submit");
+  const estimated = $("dq").value === "推估";
+  const basis = $("basis").value.trim();
+
+  if (estimated && !basis) {
+    $("entrymsg").innerHTML =
+      '<div class="msg bad">資料品質選「推估」時必須填推估依據。'
+      + '推估本身沒問題，說不出怎麼推的才有問題。</div>';
+    return;
+  }
+
+  btn.disabled = true;
+  try {
+    const rec = await call(
+      `/orgs/${ORG}/sources/${encodeURIComponent($("src").value)}/records`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          period_start: $("ps").value,
+          period_end: $("pe").value,
+          raw_quantity: Number($("qty").value),
+          unit: $("unit").value,
+          data_quality: $("dq").value,
+          estimation_basis: basis || null,
+          evidence_type: $("ev").value,
+          evidence_ref: $("ref").value || null,
+        }),
+      });
+
+    const allocated = rec.allocation_ratio < 1
+      ? `<br>跨期分攤：${rec.raw_quantity} → ${n6(rec.allocated_quantity)} `
+        + `${esc(rec.unit)}（比例 ${rec.allocation_ratio.toFixed(6)}）`
+      : "";
+    $("entrymsg").innerHTML =
+      `<div class="msg ok">已登錄並計算：<strong>`
+      + `${(rec.total_co2e_kg / 1000).toFixed(6)} tCO2e</strong>${allocated}</div>`
+      + `<pre>${esc(rec.calc_trace)}</pre>`;
+    loadSources();
+  } catch (err) {
+    const { code, message } = describe(err);
+    $("entrymsg").innerHTML =
+      `<div class="msg bad">`
+      + (code ? `<span class="code-label">${esc(code)}</span>` : "")
+      + esc(message) + `</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+/* ── 表八 ── */
+async function loadSummary() {
+  const s = await call(`/orgs/${ORG}/summary`);
+  render(s);
+}
+$("recalc").onclick = async () => {
+  $("recalc").disabled = true;
+  try { render(await call(`/orgs/${ORG}/calculate`, { method: "POST" })); }
+  finally { $("recalc").disabled = false; }
+};
+
+function render(s) {
+  $("total").textContent = n6(s.total_tco2e);
+  $("pending").innerHTML = s.uncalculated_count
+    ? `<span class="tag err">尚有 ${s.uncalculated_count} 筆未計算</span>　`
+      + `這張表八不完整，請按「重新計算」`
+    : "";
+
+  $("bytype").innerHTML =
+    `<tr><th>排放型式</th><th class="num">tCO2e</th><th class="num">占比</th></tr>` +
+    Object.entries(s.by_emission_type).sort((a, b) => b[1] - a[1]).map(([k, v]) =>
+      `<tr><td>${esc(k)}</td><td class="num">${n6(v)}</td>
+       <td class="num">${(v / s.total_tco2e * 100).toFixed(2)}%</td></tr>`).join("");
+
+  $("scopes").innerHTML = [
+    ["範疇一 直接排放", s.scope1_tco2e],
+    ["範疇二 外購電力", s.scope2_tco2e],
+    ["範疇三 其他間接", 0],
+  ].map(([k, v]) =>
+    `<div class="tile"><div class="k">${k}</div><div class="v">${n6(v)}</div></div>`).join("")
+    + `<div class="tile"><div class="k">合計</div><div class="v">${n6(s.total_tco2e)}</div></div>`;
+
+  $("bygas").innerHTML =
+    `<tr><th>氣體</th><th class="num">tCO2e</th><th class="num">占比</th></tr>` +
+    ["CO2", "CH4", "N2O"].map(g => {
+      const v = s.by_gas[g] || 0;
+      return `<tr><td>${g}</td><td class="num">${n6(v)}</td>
+        <td class="num">${(v / s.total_tco2e * 100).toFixed(2)}%</td></tr>`;
+    }).join("");
+
+  $("quality").innerHTML = [
+    ["實測筆數", s.measured_count],
+    ["推估筆數", s.estimated_count],
+    ["推估排放量占比", (s.estimated_share * 100).toFixed(2) + "%"],
+  ].map(([k, v]) =>
+    `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+
+  $("issues").innerHTML = s.issues.length === 0
+    ? '<p class="muted">沒有發現問題。</p>'
+    : s.issues.map(i =>
+        `<p style="margin:6px 0">
+           <span class="tag ${i.severity === "error" ? "err" : "warn"}">
+             ${i.severity === "error" ? "缺漏" : "注意"}</span>
+           <span class="code">${esc(i.source_no)}</span> ${esc(i.source_name)}：
+           ${esc(i.issue)}</p>`).join("");
+}
+
+/* ── 起動 ── */
+(async () => {
+  try {
+    const health = await call("/health");
+    if (health.status !== "ok") {
+      $("orgline").innerHTML =
+        `<span class="tag err">${esc(health.status)}</span> ${esc(health.hint || "")}`;
+      return;
+    }
+    const orgs = await call("/orgs");
+    const org = orgs.find(o => o.id === ORG) || orgs[0];
+    $("orgline").textContent =
+      `${org.name}　${org.reporting_year_roc} 年度（${org.year_start} ~ ${org.year_end}）`
+      + `　係數版本 ${health.factor_set}`;
+    syncBasis();
+    await loadSources();
+    await search();
+  } catch (err) {
+    $("orgline").innerHTML =
+      `<span class="tag err">載入失敗</span> ${esc(describe(err).message)}`;
+  }
+})();
+</script>
+</body>
+</html>
