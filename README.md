@@ -16,12 +16,15 @@ carbon/                      ← 專案根目錄，名字隨你取
 │   ├── __init__.py          ← 空檔案，但一定要有
 │   ├── db.py
 │   ├── models.py
-│   ├── calculator.py
+│   ├── calculator.py        ← 純函式計算引擎
+│   ├── service.py           ← 資料庫 ↔ 計算引擎
 │   └── seed.py
 ├── scripts/
 │   ├── __init__.py          ← 空檔案，但一定要有
 │   ├── extract_codes.py     ← 一次性工具，代碼表已抽好，平常不必跑
-│   └── import_seed.py       ← 把種子資料寫進 carbon.db
+│   ├── import_seed.py       ← 官方係數與代碼表 → carbon.db
+│   ├── load_demo.py         ← 示範小吃店（選配）
+│   └── calc_demo.py         ← 算示範案例，印出表八
 ├── data/codes/              ← 官方代碼表，7,603 筆，已進版控
 │   ├── process_code.csv
 │   ├── equipment_code.csv
@@ -33,7 +36,8 @@ carbon/                      ← 專案根目錄，名字隨你取
     ├── test_seed.py
     ├── test_codes.py
     ├── test_import_seed.py
-    └── test_models.py
+    ├── test_models.py
+    └── test_service.py
 ```
 
 `__init__.py` 是三個**完全空白**的檔案，Python 靠它辨認資料夾是套件。漏了會出現
@@ -91,7 +95,7 @@ python -m pytest tests/ -v
 
 ```
 ======================== test session starts ========================
-collected 66 items
+collected 86 items
 
 tests/test_calculator.py::test_derived_factor_matches_spreadsheet[TW-M-GASOLINE-OXI-2.270679] PASSED
 tests/test_calculator.py::test_ch4_uses_28_not_30 PASSED
@@ -99,14 +103,14 @@ tests/test_calculator.py::test_ch4_uses_28_not_30 PASSED
 tests/test_seed.py::test_every_fuel_matches_the_spreadsheet PASSED
 tests/test_codes.py::test_v5_codes_agree_with_the_official_table[material_codes-material_code] PASSED
 tests/test_import_seed.py::test_factors_survive_the_round_trip PASSED
-======================== 66 passed in 7.02s =========================
+======================== 86 passed in 7.78s =========================
 ```
 
-**看到 `66 passed` 就對了。**
+**看到 `86 passed` 就對了。**
 
 只想看結果不看細節，把 `-v` 換成 `-q`。
 
-## 這 66 個測試在測什麼
+## 這 86 個測試在測什麼
 
 ### `test_calculator.py` — 計算引擎（17 個）
 
@@ -184,9 +188,33 @@ tests/test_import_seed.py::test_factors_survive_the_round_trip PASSED
 第二個守的是 SQLite 特有的坑：`DateTime(timezone=True)` 在 SQLite 上是空頭支票，
 寫進去帶時區、讀出來卻是 naive。`UtcDateTime` 這一層就是為了補它。
 
-兩個最重要的是 `test_totals_match_spreadsheet_table8` 與
-`test_every_fuel_matches_the_spreadsheet`：**程式與試算表算出同一個數字**。
-試算表那邊是 Excel 公式，程式這邊是 Python，兩條路徑完全獨立。
+### `test_service.py` — 服務層（20 個）
+
+| 測試 | 驗證的事 |
+|---|---|
+| **`test_year_total_matches_spreadsheet_table8`** | **從資料庫算出 7.531736 tCO2e** |
+| `test_scope_split_matches_spreadsheet` | 範疇一 0.805218、範疇二 6.726519 |
+| **`test_stationary_and_mobile_are_split`** | **固定 0.590866／移動 0.214352，試算表做不到的事** |
+| `test_every_record_matches_the_spreadsheet` | 五筆單據逐筆對照 V 欄 |
+| `test_estimated_share_matches_spreadsheet` | 實測 3、推估 2、推估占比 40.9488% |
+| `test_gas_split_is_real_not_all_co2` | CH4／N2O 照實拆開，不像試算表全算成 CO2 |
+| `test_cross_period_bill_is_allocated_by_days` | 雙月期電費單分攤 45/62 |
+| `test_estimated_without_basis_is_refused` | 推估沒填依據時擋下 |
+| `test_cross_period_marked_measured_is_refused` | 跨年帳單標「實測」時擋下 |
+| `test_sources_without_any_data_are_errors` | S03、S05 沒有活動數據 → error |
+| `test_partial_year_coverage_is_warned` | 只有 1~4 月 → 指出缺哪些月 |
+| `test_fuel_result_pins_down_the_factor_version` | 快照記下熱值、公告文號、GWP |
+| `test_electricity_result_records_the_factor_not_gwp` | 電力不套 GWP |
+| `test_org_heating_value_overrides_the_default` | 事業自填熱值優先 |
+| `test_unpublished_electricity_year_says_so` | 114 年講「尚未公告」而非「查無」 |
+| `test_unsupported_emission_type_is_refused` | 製程／逸散報錯，不算成 0 |
+| `test_recalculating_updates_instead_of_duplicating` | 重跑覆蓋，不長出第二筆 |
+
+最重要的是第一個：**同一個數字從兩條完全獨立的路徑算出來**。試算表那邊是 Excel
+公式，這邊是 Python 走 ORM 查係數 → 推導每單位係數 → 跨期分攤 → 計算 → 彙總。
+中間任何一段接錯，數字就不會對。
+
+只有一條路徑時，測試測的是「程式跟自己一致」，那證明不了什麼。
 
 ## 建立資料表
 
@@ -229,6 +257,53 @@ GWP ：AR5
 
 重建資料庫：刪掉 `carbon.db` 再跑一次 `import_seed.py` 即可。
 
+## 跑示範案例
+
+```bash
+python scripts/load_demo.py
+```
+
+載入 v5 試算表的「示範小吃店」：5 個排放源、5 筆單據、3 項邊界排除。
+
+**這是選配的，不是種子資料。** 電號 `01-23-4567-89`、車牌 `3888-AB` 都是編的，
+假資料不該混進每個人的資料庫，所以跟 `import_seed.py` 拆成兩支。不想要就
+`python scripts/load_demo.py --clear` 移除。
+
+接著算：
+
+```bash
+python scripts/calc_demo.py
+```
+
+```
+示範小吃店　113 年度溫室氣體排放量彙總
+
+【依排放型式】
+  固定燃燒           0.590866 tCO2e
+  外購電力           6.726519 tCO2e
+  移動燃燒           0.214352 tCO2e
+
+【依範疇】
+  範疇一 直接排放         0.805218 tCO2e
+  範疇二 外購電力         6.726519 tCO2e
+  總計                   7.531736 tCO2e
+
+【資料品質】
+  實測 3 筆　推估 2 筆
+  推估排放量占比 40.95%
+
+【完整性檢查】
+  ! S01 台電電號 01-23-4567-89：缺少月份：5月、6月、…、12月
+  ✗ S03 外送機車隊：清冊列有此排放源，但全年無任何活動數據。…
+  ✗ S05 備用發電機（柴油）：清冊列有此排放源，但全年無任何活動數據。…
+```
+
+**7.531736 與試算表表八一致** —— 但這一次是從資料庫算出來的。
+
+那些警告不是 bug。示範資料刻意只涵蓋 1~4 月，且有兩個排放源完全沒有單據 ——
+少一張帳單，總量少一截，卻不會有任何錯誤訊息，除非有東西在檢查。這正是完整性
+檢查存在的理由，所以示範資料保留這個狀態。
+
 ## 代碼表是怎麼來的
 
 `data/codes/*.csv` 是從官方「溫室氣體排放量清冊表單」的附表五～七抽出來的，
@@ -248,7 +323,7 @@ python scripts/extract_codes.py
 
 ## 測試的相依是分層的
 
-五個測試檔需要的東西不一樣，這是刻意的：
+六個測試檔需要的東西不一樣，這是刻意的：
 
 | 測試檔 | 需要 | 為什麼可以這麼輕 |
 |---|---|---|
@@ -257,11 +332,12 @@ python scripts/extract_codes.py
 | `test_codes.py` | ＋openpyxl | 去重是純函式，其餘讀已進版控的 CSV |
 | `test_import_seed.py` | ＋SQLAlchemy | 碰資料庫，但建在記憶體裡 |
 | `test_models.py` | ＋SQLAlchemy | 同上 |
+| `test_service.py` | ＋SQLAlchemy | 同上 |
 
 只跑不需要資料庫的三組（44 個）：
 
 ```bash
-python -m pytest tests/ -q --ignore=tests/test_import_seed.py --ignore=tests/test_models.py
+python -m pytest tests/ -q --ignore=tests/test_import_seed.py --ignore=tests/test_models.py --ignore=tests/test_service.py
 ```
 
 這個分層不是巧合，是設計的結果 —— 會安靜出錯的邏輯（單位換算、係數推導、欄位
@@ -299,11 +375,12 @@ KCAL_TO_TJ = 4.1868e-9
 KCAL_TO_TJ = 4.1868e-8
 ```
 
-再跑一次測試，應該會看到 **9 個測試失敗**（`test_calculator.py` 6 個、`test_seed.py`
-2 個、`test_import_seed.py` 1 個）。改回來後 66 個全部通過。
+再跑一次測試，應該會看到 **15 個測試失敗**（`test_calculator.py` 6 個、
+`test_service.py` 6 個、`test_seed.py` 2 個、`test_import_seed.py` 1 個）。
+改回來後 86 個全部通過。
 
-那第 9 個是 `test_factors_survive_the_round_trip` —— 它從資料庫的值重算係數，
-所以計算引擎改壞了它也跟著紅。這正是它存在的理由。
+`test_service.py` 也跟著紅，是因為它從資料庫算出來的總量會偏掉 —— 一個常數改壞，
+從純函式到最終報表整條鏈都會被抓到。這正是分層測試的用意。
 
 **測試通過不代表程式對，但改壞了測試卻沒失敗，就一定有問題。**
 這個小實驗可以錄進 demo，展示你的驗證機制是有效的。

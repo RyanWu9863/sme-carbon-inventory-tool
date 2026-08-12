@@ -2,7 +2,7 @@
 
 換一台電腦接著做時，先讀這一份。程式怎麼裝、怎麼跑在 [README.md](README.md)。
 
-最後更新：2026-08-12（種子資料已進資料庫，66 個測試全綠）
+最後更新：2026-08-12（種子資料已進資料庫，86 個測試全綠）
 
 ---
 
@@ -13,7 +13,7 @@ git clone https://github.com/RyanWu9863/sme-carbon-inventory-tool.git
 cd sme-carbon-inventory-tool
 python -m venv .venv && .venv\Scripts\activate (PowerShell: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process; .venv\Scripts\Activate.ps1)
 pip install -r requirements.txt
-python -m pytest tests/ -q          # 應該看到 66 passed
+python -m pytest tests/ -q          # 應該看到 86 passed
 python scripts/import_seed.py       # 建 carbon.db 並匯入種子資料
 ```
 
@@ -25,7 +25,7 @@ python scripts/import_seed.py       # 建 carbon.db 並匯入種子資料
 | `溫室氣體排放量清冊表單(範例).ods` | 916 KB 官方原檔，且內嵌原始製表者的內部路徑 | **沒差了**，代碼表已抽成 CSV 進版控 |
 
 **兩個都不再擋路。** 上一版寫「.ods 少了下一步做不了」，那件事已經做完 —— 代碼表
-7,603 筆在 `data/codes/`，66 個測試在沒有 .ods 的機器上照樣全綠。.ods 只有官方
+7,603 筆在 `data/codes/`，86 個測試在沒有 .ods 的機器上照樣全綠。.ods 只有官方
 改版、要重抽代碼表時才需要。
 
 ---
@@ -40,26 +40,34 @@ python scripts/import_seed.py       # 建 carbon.db 並匯入種子資料
 
 ## 現在做到哪
 
-**資料庫現在是滿的了。** 係數、熱值、電力、GWP、7,603 筆代碼表都在 `carbon.db` 裡，而且從資料庫的值重算 12 個係數與試算表逐位相同。還缺的是把資料庫接上計算引擎的服務層。
+**驗收基準達成：從資料庫算出 7.531736 tCO2e。**
+
+```
+python scripts/import_seed.py    官方係數與代碼表
+python scripts/load_demo.py      示範小吃店
+python scripts/calc_demo.py      → 7.531736 tCO2e
+```
+
+整條鏈打通了：ORM 查係數 → 推導每單位係數 → 跨期分攤 → 計算 → 彙總表八。
 
 | 元件 | 狀態 |
 |---|---|
 | `app/models.py` — 13 張表，對齊官方表一~表七、附表一/二/五~七 | ✅ |
 | `app/calculator.py` — 熱值換算、GWP 加總、跨期分攤、完整性檢查 | ✅ |
 | `app/seed.py` — 從 v5 試算表讀係數／熱值／電力／GWP／公告出處 | ✅ |
+| `app/service.py` — 查係數、算一筆、算年度 | ✅ |
 | `scripts/extract_codes.py` — 官方 .ods → `data/codes/*.csv` | ✅ |
 | `scripts/import_seed.py` — 代碼表＋係數 → `carbon.db`，可重複執行 | ✅ |
-| `tests/` — 66 個測試，全綠 | ✅ |
-| 代碼表全量抽出（**7,603** 筆，非 7,639，見下） | ✅ |
-| 種子資料寫進資料庫 | ✅ |
-| 服務層（資料庫 ↔ 計算引擎） | ❌ **下一步** |
-| API | ❌ |
+| `scripts/load_demo.py` — 示範案例，選配 | ✅ |
+| `scripts/calc_demo.py` — 算年度並印出表八 | ✅ |
+| `tests/` — 86 個測試，全綠 | ✅ |
+| API | ❌ **下一步**，服務層做完後只是薄薄一層 |
 | 使用者介面 | ❌ |
+| 報表與 Excel 匯出 | ❌ |
 
-驗收基準：**7.531736 tCO2e**。目前是純函式算出這個數字（`test_totals_match_spreadsheet_table8`）；服務層做完後，要能從資料庫算出同一個數字。
-
-中間有一段已經打通了：`test_factors_survive_the_round_trip` 從資料庫讀係數與熱值、
-重算 12 個每單位係數，與試算表 U 欄一致（最大差 4.4e-16）。剩下的是活動數據那一半。
+**7.531736 現在有兩條獨立路徑算得出來**：純函式
+（`test_totals_match_spreadsheet_table8`）與資料庫
+（`test_year_total_matches_spreadsheet_table8`），加上 Excel 公式本身共三條。
 
 ---
 
@@ -228,6 +236,55 @@ naive datetime 直接擋在寫入端。`tests/test_models.py` 新增 4 個測試
 | 範疇二 外購電力 | 6.726519 |
 | **總計** | **7.531736** |
 
+### 示範資料與服務層
+
+`scripts/load_demo.py` + `app/service.py` + `scripts/calc_demo.py`
++ `tests/test_service.py`（新增 20 個測試，累計 86 個）。
+
+**從資料庫算出 7.531736 tCO2e，與試算表表八一致。** 每個分項也都對得上：
+
+| | 程式（從 DB） | 試算表 |
+|---|---:|---:|
+| 範疇一 固定燃燒 | 0.590866 | （試算表未拆） |
+| 範疇一 移動燃燒 | 0.214352 | （試算表未拆） |
+| 範疇一 小計 | 0.805218 | 0.805218 |
+| 範疇二 外購電力 | 6.726519 | 6.726519 |
+| **總計** | **7.531736** | **7.531736** |
+| 推估排放量占比 | 40.9488% | 40.9488% |
+
+**兩處程式版比試算表準：**
+
+1. **固定／移動燃燒有拆開**（試算表表八 B11 自己註明做不到）。
+2. **氣體別是真的拆**。試算表把 100% 都算成 CO2，實際上燃料燃燒會排 CH4 與 N2O
+   （每單位係數裡本來就含它們）。程式算出 CO2 99.88%／CH4 0.03%／N2O 0.09%。
+   總量不變，拆的是同一筆錢怎麼分。
+
+**示範資料走 C：獨立的 `load_demo.py`。** `import_seed.py` 只放官方參考資料，
+示範小吃店是假資料，不該混進每個人的資料庫。`--clear` 可移除。兩支都可重複執行。
+
+**服務層強制的兩件事**（資料庫沒有這些約束）：
+
+- **推估必須填依據。** 而且跨期分攤後才知道一筆資料是不是推估 —— 那是計算過程
+  產生的事實，寫入當下還不知道，所以只能由這一層擋。標「實測」卻跨年度的也擋。
+- **不支援的排放型式報錯，不算成 0。** 製程、逸散、外購蒸汽目前不做，但算成 0
+  會讓報告少一截卻沒有任何提示。
+
+**做過突變測試**，四種典型的安靜錯誤都被抓到：分攤失效、固定/移動不拆、
+範疇一二判斷反轉、推估檢查被拿掉。
+
+**讀取「活動數據登錄」的坑比先前記的更深。** 那張表有三種列：
+
+```
+A 有序號、B 與 G 有值    真正的單據         第 7~11 列
+A 有序號、B 與 G 空白    預先編號的空白範本  第 12~30 列
+A 空白、B 有名稱         分頁自己的小計列    第 33~35 列
+```
+
+只看「A 是不是數字」會把空白範本讀成一堆空記錄；只看「B 有沒有值」會把小計列
+讀進來，**總量直接翻倍而且沒有錯誤訊息**。兩個條件都要。表三則是另一種形狀
+（尾端有一列說明文字），改用「遇到整列空白就停」，再回頭檢查後面還有沒有漏網的
+排放源 —— 否則清單中間被插一列空白就會靜靜截斷。
+
 ---
 
 ## 這次確認的四件事
@@ -268,8 +325,8 @@ naive datetime 直接擋在寫入端。`tests/test_models.py` 新增 4 個測試
 |---|---|---|---|
 | 1 | 代碼表抽成 CSV | W2② | ✅ 完成，7,603 筆在 `data/codes/` |
 | 1.5 | 種子資料寫進資料庫 | W2① | ✅ 完成，`scripts/import_seed.py` |
-| 2 | 服務層：資料庫 ↔ 計算引擎 | W2④ | **現在做**，驗收基準是從 DB 算出 7.531736 |
-| 3 | API | W2③ | 服務層做完後只是薄薄一層 |
+| 2 | 服務層：資料庫 ↔ 計算引擎 | W2④ | ✅ 完成，從 DB 算出 7.531736 |
+| 3 | API | W2③ | **現在做**，服務層做完後只是薄薄一層 |
 | 4 | 最小可用介面：輸入到看見表八 | W3 | 核心 |
 | 5 | 報表與 Excel 匯出 | W7 | 核心 |
 | 6 | 電費單解析 | W4，可砍 | **升級為值得做**（省下的時間給它） |
@@ -288,32 +345,31 @@ naive datetime 直接擋在寫入端。`tests/test_models.py` 新增 4 個測試
 
 ## 下一步（可直接開工）
 
-~~1. 從 .ods 抽出三張代碼表~~　✅ 完成（7,603 筆，非 7,639）
-~~2. `scripts/import_seed.py`~~　✅ 完成（可重複執行，係數往返一致）
+~~1. 代碼表抽成 CSV~~　✅　~~2. `import_seed.py`~~　✅　~~3. 服務層~~　✅
 
-**服務層：`app/service.py`（暫名）。** 這是整個專案的核心，缺的就是它。
+**API：`app/api.py`（FastAPI）。** `db.py` 的 `get_db()` 已經寫好依賴注入，
+服務層也把邏輯收乾淨了，這一層應該很薄。
 
-現在的狀態是兩頭都好、中間沒接：`calculator.py` 收的是攤平的 dataclass
-（`FuelFactorInput` + 熱值 + GWP dict），資料庫裡放的是 ORM 物件。服務層要做的事：
+最小可用的一組端點：
 
-1. **查係數**：給 `EmissionSource.factor_key` 與盤查年度，取出 `PublishedFactor`、
-   對應的 `HeatingValue`（事業自填優先於系統預設）、`GwpValue`，組成
-   `FuelFactorInput` 餵進 `derive_fuel_factor`。
-2. **算一筆活動數據**：`ActivityRecord` → 跨期分攤（`allocate_period`）→
-   `calculate_fuel` 或 `calculate_electricity` → 寫回 `EmissionResult`，**連同快照
-   欄位**（`heating_value_used`、`factor_set_version`、`ch4_gwp_used`、`calc_trace`）。
-3. **算整個年度**：彙總成表八，並跑 `check_completeness`。
+```
+GET  /orgs/{id}/summary          → YearSummary（表八）
+GET  /orgs/{id}/sources          → 表三清冊
+POST /orgs/{id}/records          → 新增一筆活動數據
+GET  /codes/material?q=汽油      → 代碼下拉選單（6,222 筆要能搜尋）
+```
 
-**驗收基準：把 v5「活動數據登錄」那幾筆餵進去，從資料庫算出 7.531736 tCO2e。**
-目前這個數字只有純函式算得出來（`test_totals_match_spreadsheet_table8`）。
+三件要注意的：
 
-兩件要注意的：
+- **`ServiceError` 要對應成合理的 HTTP 狀態。** `DataQualityError` 是使用者填錯
+  （422），`FactorNotFoundError` 分兩種：查不到係數編號是使用者的問題（400），
+  電力係數尚未公告則不是任何人的錯，訊息要照原樣傳給前端。
+- **代碼查詢要能搜尋。** 6,222 筆原燃物料代碼不可能做成下拉選單，要 `LIKE` 查詢
+  加上限筆數。
+- **`requirements.txt` 要加 fastapi 與 uvicorn。** 目前只有三個套件，測試層次分明
+  這件事要維持住 —— API 測試用 `TestClient`，不該讓計算引擎的測試也依賴 fastapi。
 
-- **推估要強制填理由。** `ActivityRecord.estimation_basis` 在 models.py 註明「推估時
-  必填，由服務層強制」—— 資料庫沒有這個約束，是服務層的責任。跨期分攤後
-  `Allocation.quality_hint` 會回「推估」，那時就要擋。
-- **電力不可再乘 GWP。** 走 `calculate_electricity` 而非 `calculate_fuel`，且要依
-  盤查年度取係數。114 年度尚未公告，此時要給得出「政府還沒公告」而不是「查無資料」。
+之後是介面（W3）與報表匯出（W7）。
 
 ---
 
