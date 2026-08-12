@@ -18,24 +18,34 @@ carbon/                      ← 專案根目錄，名字隨你取
 │   ├── models.py
 │   ├── calculator.py
 │   └── seed.py
+├── scripts/
+│   ├── __init__.py          ← 空檔案，但一定要有
+│   └── extract_codes.py     ← 一次性工具，代碼表已抽好，平常不必跑
+├── data/codes/              ← 官方代碼表，7,603 筆，已進版控
+│   ├── process_code.csv
+│   ├── equipment_code.csv
+│   ├── material_code.csv
+│   └── README.md            ← 來源、版本、去重紀錄
 └── tests/
     ├── __init__.py          ← 空檔案，但一定要有
     ├── test_calculator.py
-    └── test_seed.py
+    ├── test_seed.py
+    └── test_codes.py
 ```
 
-`__init__.py` 是兩個**完全空白**的檔案，Python 靠它辨認資料夾是套件。漏了會出現
+`__init__.py` 是三個**完全空白**的檔案，Python 靠它辨認資料夾是套件。漏了會出現
 `ModuleNotFoundError: No module named 'app'`。
 
 建立空檔案：
 
 ```bash
 # macOS / Linux
-touch app/__init__.py tests/__init__.py
+touch app/__init__.py tests/__init__.py scripts/__init__.py
 
 # Windows PowerShell
 New-Item app/__init__.py -ItemType File
 New-Item tests/__init__.py -ItemType File
+New-Item scripts/__init__.py -ItemType File
 ```
 
 ## 環境需求
@@ -78,20 +88,21 @@ python -m pytest tests/ -v
 
 ```
 ======================== test session starts ========================
-collected 28 items
+collected 44 items
 
 tests/test_calculator.py::test_derived_factor_matches_spreadsheet[TW-M-GASOLINE-OXI-2.270679] PASSED
 tests/test_calculator.py::test_ch4_uses_28_not_30 PASSED
 ...
 tests/test_seed.py::test_every_fuel_matches_the_spreadsheet PASSED
-======================== 28 passed in 0.80s =========================
+tests/test_codes.py::test_v5_codes_agree_with_the_official_table[material_codes-material_code] PASSED
+======================== 44 passed in 1.13s =========================
 ```
 
-**看到 `28 passed` 就對了。**
+**看到 `44 passed` 就對了。**
 
 只想看結果不看細節，把 `-v` 換成 `-q`。
 
-## 這 28 個測試在測什麼
+## 這 44 個測試在測什麼
 
 ### `test_calculator.py` — 計算引擎（17 個）
 
@@ -124,6 +135,21 @@ tests/test_seed.py::test_every_fuel_matches_the_spreadsheet PASSED
 | `test_missing_workbook_says_what_to_do` | 找不到試算表時說明該怎麼辦 |
 | `test_moved_column_is_caught` | 欄位被搬動時擋在門口 |
 
+### `test_codes.py` — 官方代碼表（16 個）
+
+| 測試 | 驗證的事 |
+|---|---|
+| `test_identical_repeat_is_dropped` | 官方表單自己的重複列（同代碼同名稱）會被移除 |
+| `test_same_code_different_name_refuses_to_choose` | 同代碼卻不同名稱時拋錯，不自行挑一個 |
+| `test_official_order_is_preserved` | 保留官方原始順序，才能跟未來新版 diff |
+| `test_row_count_matches_the_official_form` ×3 | 1,023 / 358 / 6,222 筆 |
+| `test_header_and_fields_are_intact` ×3 | 欄位齊全，代碼與名稱都不是空的 |
+| `test_codes_are_unique` ×3 | 代碼是主鍵，不可重複 |
+| **`test_v5_codes_agree_with_the_official_table`** ×3 | **v5 手挑的 23 筆代碼，與官方全量逐字相同** |
+| `test_every_fuel_material_code_is_in_the_official_table` | 12 個燃料的原燃物料代碼都對得到官方表 |
+
+**這一組不需要官方 .ods**：去重邏輯用自編假資料測，其餘測已進版控的 CSV。
+
 兩個最重要的是 `test_totals_match_spreadsheet_table8` 與
 `test_every_fuel_matches_the_spreadsheet`：**程式與試算表算出同一個數字**。
 試算表那邊是 Excel 公式，程式這邊是 Python，兩條路徑完全獨立。
@@ -141,19 +167,36 @@ python check_schema.py
 
 重建資料庫：刪掉 `carbon.db` 再跑一次即可。
 
+## 代碼表是怎麼來的
+
+`data/codes/*.csv` 是從官方「溫室氣體排放量清冊表單」的附表五～七抽出來的，
+共 7,603 筆。**已經進版控，平常不需要重跑。**
+
+官方 .ods 原檔 916 KB、內嵌原始製表者的內部路徑，`.gitignore` 已擋 —— 也就是說
+你 clone 下來不會有那個檔，但代碼表照樣可用，測試也照樣全綠。這是刻意的。
+
+只有官方改版時才需要重跑（把新的 .ods 放到專案根目錄）：
+
+```bash
+python scripts/extract_codes.py
+```
+
+它會印出各表筆數與去重明細，並更新 `data/codes/README.md`。
+版面對不上、序號跳號、同代碼卻不同名稱，都會直接拋錯而不是產出半套資料。
+
 ## 只想跑測試的話
 
-兩個測試檔都**不碰資料庫**，所以不用裝 SQLAlchemy：
+三個測試檔都**不碰資料庫**，所以不用裝 SQLAlchemy：
 
 ```bash
 pip install pytest openpyxl
 python -m pytest tests/ -q
 ```
 
-`test_calculator.py` 只 import `calculator.py`；`test_seed.py` 另外要 `openpyxl`
-來讀試算表。這不是巧合，是設計的結果 —— 計算引擎寫成純函式、種子資料讀取不寫任何
-檔案，兩者都不依賴資料庫，所以可以獨立測試。被問「你怎麼確保計算正確」時，這點可以
-直接拿來講。
+`test_calculator.py` 只 import `calculator.py`；`test_seed.py` 與 `test_codes.py`
+另外要 `openpyxl` 來讀試算表。這不是巧合，是設計的結果 —— 計算引擎寫成純函式、
+種子資料讀取不寫任何檔案、代碼表抽取的去重邏輯也是純函式，全都不依賴資料庫，
+所以可以獨立測試。被問「你怎麼確保計算正確」時，這點可以直接拿來講。
 
 ## 常見錯誤
 
@@ -165,6 +208,8 @@ python -m pytest tests/ -q
 | `ModuleNotFoundError: No module named 'sqlalchemy'` | 只跑測試不需要它；要跑 `check_schema.py` 才需安裝 |
 | `FileNotFoundError: 找不到試算表` | `碳盤查試算表_v5.xlsx` 不在專案根目錄 |
 | `SeedFormatError: ... 欄位順序可能被更動過` | 試算表的欄位被搬動，或換了不同版本的檔案 |
+| `FileNotFoundError: 找不到官方表單` | 只有 `extract_codes.py` 需要 .ods，跑測試不需要 |
+| `ExtractError: ... 序號不連續` | 官方表單版面改過，解析漏讀了列，不要放行 |
 | `SyntaxError` 出現在型別標註處 | Python 版本低於 3.10，請升級 |
 | 中文顯示成亂碼（Windows） | 終端機執行 `chcp 65001` 切換為 UTF-8 |
 
@@ -185,7 +230,7 @@ KCAL_TO_TJ = 4.1868e-8
 ```
 
 再跑一次測試，應該會看到 **8 個測試失敗**（`test_calculator.py` 6 個、`test_seed.py`
-2 個）。改回來後 28 個全部通過。
+2 個）。改回來後 44 個全部通過。
 
 **測試通過不代表程式對，但改壞了測試卻沒失敗，就一定有問題。**
 這個小實驗可以錄進 demo，展示你的驗證機制是有效的。

@@ -1,0 +1,12 @@
+# 全部文字檔統一 LF。
+#
+# 為什麼要釘：extract_codes.py 刻意用 lineterminator="\n" 輸出 CSV，
+# 因為「重跑一次產出 byte 完全相同」是它的驗收條件之一。若讓 git 在
+# checkout 時把 CSV 轉成 CRLF，在 Windows 上重跑腳本就會看起來像是
+# 改動了 7,603 行 —— 明明什麼都沒變。
+* text=auto eol=lf
+
+# 二進位檔，不要做任何換行或編碼轉換
+*.xlsx binary
+*.ods  binary
+*.db   binary
