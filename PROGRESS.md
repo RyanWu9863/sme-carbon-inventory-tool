@@ -2,7 +2,7 @@
 
 換一台電腦接著做時，先讀這一份。程式怎麼裝、怎麼跑在 [README.md](README.md)。
 
-最後更新：2026-08-12（種子資料已進資料庫，62 個測試全綠）
+最後更新：2026-08-12（種子資料已進資料庫，66 個測試全綠）
 
 ---
 
@@ -13,7 +13,7 @@ git clone https://github.com/RyanWu9863/sme-carbon-inventory-tool.git
 cd sme-carbon-inventory-tool
 python -m venv .venv && .venv\Scripts\activate (PowerShell: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process; .venv\Scripts\Activate.ps1)
 pip install -r requirements.txt
-python -m pytest tests/ -q          # 應該看到 62 passed
+python -m pytest tests/ -q          # 應該看到 66 passed
 python scripts/import_seed.py       # 建 carbon.db 並匯入種子資料
 ```
 
@@ -25,7 +25,7 @@ python scripts/import_seed.py       # 建 carbon.db 並匯入種子資料
 | `溫室氣體排放量清冊表單(範例).ods` | 916 KB 官方原檔，且內嵌原始製表者的內部路徑 | **沒差了**，代碼表已抽成 CSV 進版控 |
 
 **兩個都不再擋路。** 上一版寫「.ods 少了下一步做不了」，那件事已經做完 —— 代碼表
-7,603 筆在 `data/codes/`，62 個測試在沒有 .ods 的機器上照樣全綠。.ods 只有官方
+7,603 筆在 `data/codes/`，66 個測試在沒有 .ods 的機器上照樣全綠。.ods 只有官方
 改版、要重抽代碼表時才需要。
 
 ---
@@ -49,7 +49,7 @@ python scripts/import_seed.py       # 建 carbon.db 並匯入種子資料
 | `app/seed.py` — 從 v5 試算表讀係數／熱值／電力／GWP／公告出處 | ✅ |
 | `scripts/extract_codes.py` — 官方 .ods → `data/codes/*.csv` | ✅ |
 | `scripts/import_seed.py` — 代碼表＋係數 → `carbon.db`，可重複執行 | ✅ |
-| `tests/` — 62 個測試，全綠 | ✅ |
+| `tests/` — 66 個測試，全綠 | ✅ |
 | 代碼表全量抽出（**7,603** 筆，非 7,639，見下） | ✅ |
 | 種子資料寫進資料庫 | ✅ |
 | 服務層（資料庫 ↔ 計算引擎） | ❌ **下一步** |
@@ -154,7 +154,7 @@ TW-M-GASOLINE-OXI       2.270679160320    2.270679160320   0.0e+00
 
 ### 種子資料寫進資料庫
 
-`scripts/import_seed.py` + `tests/test_import_seed.py`（新增 18 個測試，共 62 個）。
+`scripts/import_seed.py` + `tests/test_import_seed.py`（新增 18 個測試，累計 62 個）。
 
 匯入結果：代碼表 1,023／358／6,222，GWP 4，公告版本 1，燃料係數 12，熱值 6，電力 2。
 
@@ -179,6 +179,54 @@ TW-M-GASOLINE-OXI       2.270679160320    2.270679160320   0.0e+00
   「使用者可以合法覆寫官方值」的東西。有測試守著。
 - **整批同一個 transaction，任一步失敗全部回滾。** 匯入到一半的資料庫比空的危險，
   因為它看起來是能用的。
+
+### 服務層前的三件清理
+
+**1. B001 燃氣台爐（改 v5 表三）**
+
+S04 廚房天然氣爐具的設備代碼 `0020 燃氣鍋爐`（工業鍋爐）改為 `B001 燃氣台爐`，
+`代碼表` 分頁的設備清單同步替換，備註 R7 改寫（原文「設備代碼無『瓦斯爐』，暫歸
+燃氣鍋爐」已不成立）。
+
+改法照舊：**只換 `xl/sharedStrings.xml` 裡的字串與 `sheet2.xml` 的公式快取值，
+其餘 zip entry 原樣複製。** 用 openpyxl 重寫會丟掉公式快取值。
+
+剛好只要動三個 sharedString：`[105] "0020"` 被 表三 G7 與 代碼表 D6 共用，改一處
+兩邊都會動；`[350] "燃氣鍋爐"`；`[109]` 備註。另外 表三 H7 是
+`INDEX/MATCH` 公式，它的快取值也要手動更新成「燃氣台爐」。
+
+改完逐格驗過：**7.531736 與所有公式快取值完好**。
+
+**2. 時間戳記改成帶時區**
+
+`dt.datetime.utcnow()` 不只是 deprecated，它回傳的是「UTC 的時刻卻沒有時區標記」，
+跟本地時間一比就靜靜差 8 小時。
+
+改的過程發現一個 SQLite 特有的坑：**`DateTime(timezone=True)` 在 SQLite 上是空頭
+支票** —— 寫進去帶時區，讀出來 `tzinfo` 是 `None`。值沒錯，但型別跟 PostgreSQL
+不一樣，`db.py` 說的「換資料庫只要改 `CARBON_DB_URL`」就不成立。
+
+所以包了一層 `UtcDateTime`（TypeDecorator）：一律以 UTC 儲存，讀出來一律帶時區，
+naive datetime 直接擋在寫入端。`tests/test_models.py` 新增 4 個測試守著（累計 66 個）。
+
+**3. 固定／移動燃燒依表三拆分（服務層規格）**
+
+試算表把範疇一全部掛在「固定燃燒」，表八 B11 自己註明「本試算表未依設備別拆分，
+程式版應由表三排放源清冊的…」。程式版要做對。
+
+**依 `EmissionSource.emission_type`（表三「排放型式」欄）拆，不是依燃料種類。**
+理由：柴油在示範案例裡同時出現在固定（S05 備用發電機）與移動（公務車）兩邊，
+依燃料猜一定猜錯。
+
+已用試算表資料驗算過，服務層的目標數字：
+
+| | tCO2e |
+|---|---:|
+| 範疇一 固定燃燒 | 0.590866 |
+| 範疇一 移動燃燒 | 0.214352 |
+| **範疇一 小計** | **0.805218** ← 對得回表八 B12 |
+| 範疇二 外購電力 | 6.726519 |
+| **總計** | **7.531736** |
 
 ---
 
@@ -277,16 +325,14 @@ TW-M-GASOLINE-OXI       2.270679160320    2.270679160320   0.0e+00
   （汽油四列都是 7,520 kcal/公升）。一致性檢查照樣寫進 `collapse_heating_values`，
   不一致就報錯 —— 現在沒撞到不代表以後不會。自然鍵是 `(material_code, org_id)`，
   `org_id` 為 None 才是系統預設，事業自填的不會被匯入蓋掉。
-- ~~**代碼表對不上小店實況**~~ → **已查證，而且現在的分類是錯的。**
-  全量代碼表出來後查過 358 筆設備代碼：官方有 **`B001 燃氣台爐`**，那就是瓦斯爐；
-  另有 `B002 燃氣熱水器`。當初查不到是因為只看了 v5 手挑的 9 筆子集，不是官方沒有。
+- ~~**代碼表對不上小店實況**~~ → **已修正**（2026-08-12）。詳見下方「B001 燃氣台爐」。
+- ~~**`models.py` 用 `dt.datetime.utcnow`**~~ → **已修正**（2026-08-12）。詳見下方「時間戳記」。
 
-  v5 表三目前把瓦斯爐歸在 `0020 燃氣鍋爐`（工業鍋爐），**應改為 `B001`**。
+- **示範資料怎麼進資料庫** —— 已決定走 **C：獨立的 `scripts/load_demo.py`**，明確
+  opt-in。`import_seed.py` 只放官方參考資料（任何使用者都需要），示範小吃店是假資料
+  （電號、車牌都是編的），不該混進去。讀取邏輯擴充在 `seed.py`，測試 fixture 與
+  `load_demo.py` 共用同一份，只寫一次。**尚未實作**，服務層要靠它才驗得起來。
 
-  **不影響 7.531736。** 設備代碼是表三的描述性欄位，排放量走的是
-  `factor_key` → `PublishedFactor`，燃料端仍是 `350008 液化石油氣`。所以這是分類
-  正確性的修正，不是數字修正 —— 但正因為它不會讓任何測試變紅，才更要記下來。
-
-  待辦：改 v5 表三的設備代碼，並在「資料來源與限制」補一句。改 xlsx 時注意
-  openpyxl 重寫整個工作簿會丟掉公式快取值（見上面「修正 v5 的一處自相矛盾」）。
-- **`models.py` 用 `dt.datetime.utcnow`**，Python 3.12 起標記為 deprecated。不急，但遲早要改成 `dt.datetime.now(dt.UTC)`。
+  實作時的坑：「活動數據登錄」第 33~35 列是該分頁自己的小計列（範疇一／範疇二／
+  合計），B 欄與 V 欄都有值，天真地掃全部列會把小計當成資料吃進去。要依 A 欄序號
+  是不是數字來判斷。

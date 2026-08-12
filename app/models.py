@@ -34,11 +34,60 @@ import enum
 
 from sqlalchemy import (
     Boolean, Column, Date, DateTime, Enum, Float, ForeignKey,
-    Integer, String, Text, UniqueConstraint,
+    Integer, String, Text, TypeDecorator, UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
 from .db import Base
+
+
+class UtcDateTime(TypeDecorator):
+    """
+    一律以 UTC 儲存，讀出來一律帶時區。
+
+    為什麼需要自己包一層：SQLAlchemy 的 `DateTime(timezone=True)` 在 SQLite
+    上是空頭支票 —— 寫進去帶時區，讀出來 tzinfo 是 None。值沒錯（確實是
+    UTC），但同一份程式在 SQLite 與 PostgreSQL 上型別不同，db.py 說的
+    「要換 MySQL/PostgreSQL 只需改 CARBON_DB_URL」就不成立了。
+
+    naive datetime 直接擋在寫入端。允許它進來的話，某天有人塞了一個本地
+    時間，資料庫裡就會混著 UTC 與 UTC+8 兩種時刻，而且完全分不出來 ——
+    稽核用的時間戳記出這種問題，比沒有時間戳記還糟。
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError(
+                f"時間戳記不可為 naive datetime：{value!r}。請用 models.utcnow()。"
+            )
+        return value.astimezone(dt.timezone.utc)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:          # SQLite 會把時區吃掉，補回來
+            return value.replace(tzinfo=dt.timezone.utc)
+        return value.astimezone(dt.timezone.utc)
+
+
+def utcnow() -> dt.datetime:
+    """
+    現在時間（UTC，帶時區標記）。
+
+    不用 dt.datetime.utcnow()：它自 Python 3.12 起 deprecated，而且回傳的是
+    「UTC 的時刻卻沒有時區標記」的 naive datetime —— 跟本地時間的 datetime
+    一比就會靜靜地差 8 小時，不會有任何錯誤訊息。時間戳記在這裡是稽核用的
+    （報告什麼時候算的），算錯了看不出來，所以寧可一開始就帶時區。
+
+    用 dt.timezone.utc 而非 dt.UTC，後者是 Python 3.11 才有的別名，
+    README 寫的是支援 3.10 以上。
+    """
+    return dt.datetime.now(dt.timezone.utc)
 
 
 # --------------------------------------------------------------------------
@@ -135,7 +184,7 @@ class Organization(Base):
     postal_code = Column(String(10))
     address = Column(String(255))
 
-    created_at = Column(DateTime, default=dt.datetime.utcnow)
+    created_at = Column(UtcDateTime, default=utcnow)
 
     exclusions = relationship("BoundaryExclusion", back_populates="organization")
     sources = relationship("EmissionSource", back_populates="organization")
@@ -363,7 +412,7 @@ class ActivityRecord(Base):
     raw_text = Column(Text)                 # OCR／發票原始文字
 
     status = Column(Enum(RecordStatus), default=RecordStatus.DRAFT)
-    created_at = Column(DateTime, default=dt.datetime.utcnow)
+    created_at = Column(UtcDateTime, default=utcnow)
 
     source = relationship("EmissionSource", back_populates="records")
     result = relationship("EmissionResult", back_populates="record", uselist=False)
@@ -396,6 +445,6 @@ class EmissionResult(Base):
     n2o_gwp_used = Column(Float)
 
     calc_trace = Column(Text)
-    calculated_at = Column(DateTime, default=dt.datetime.utcnow)
+    calculated_at = Column(UtcDateTime, default=utcnow)
 
     record = relationship("ActivityRecord", back_populates="result")

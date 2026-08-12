@@ -32,7 +32,8 @@ carbon/                      ← 專案根目錄，名字隨你取
     ├── test_calculator.py
     ├── test_seed.py
     ├── test_codes.py
-    └── test_import_seed.py
+    ├── test_import_seed.py
+    └── test_models.py
 ```
 
 `__init__.py` 是三個**完全空白**的檔案，Python 靠它辨認資料夾是套件。漏了會出現
@@ -90,7 +91,7 @@ python -m pytest tests/ -v
 
 ```
 ======================== test session starts ========================
-collected 62 items
+collected 66 items
 
 tests/test_calculator.py::test_derived_factor_matches_spreadsheet[TW-M-GASOLINE-OXI-2.270679] PASSED
 tests/test_calculator.py::test_ch4_uses_28_not_30 PASSED
@@ -98,14 +99,14 @@ tests/test_calculator.py::test_ch4_uses_28_not_30 PASSED
 tests/test_seed.py::test_every_fuel_matches_the_spreadsheet PASSED
 tests/test_codes.py::test_v5_codes_agree_with_the_official_table[material_codes-material_code] PASSED
 tests/test_import_seed.py::test_factors_survive_the_round_trip PASSED
-======================== 62 passed in 7.05s =========================
+======================== 66 passed in 7.02s =========================
 ```
 
-**看到 `62 passed` 就對了。**
+**看到 `66 passed` 就對了。**
 
 只想看結果不看細節，把 `-v` 換成 `-q`。
 
-## 這 62 個測試在測什麼
+## 這 66 個測試在測什麼
 
 ### `test_calculator.py` — 計算引擎（17 個）
 
@@ -171,6 +172,18 @@ tests/test_import_seed.py::test_factors_survive_the_round_trip PASSED
 
 **這一組建的是記憶體資料庫**（`sqlite:///:memory:`），不會碰到你手上的 `carbon.db`。
 
+### `test_models.py` — 資料模型（4 個）
+
+| 測試 | 驗證的事 |
+|---|---|
+| `test_utcnow_is_timezone_aware` | 時間戳記帶時區，不是 naive UTC |
+| **`test_timestamp_survives_the_database_round_trip`** | **從 SQLite 讀回來時區還在** |
+| `test_naive_datetime_is_refused` | naive datetime 擋在寫入端 |
+| `test_non_utc_timezone_is_normalised` | UTC+8 寫進去，讀出來是等值的 UTC |
+
+第二個守的是 SQLite 特有的坑：`DateTime(timezone=True)` 在 SQLite 上是空頭支票，
+寫進去帶時區、讀出來卻是 naive。`UtcDateTime` 這一層就是為了補它。
+
 兩個最重要的是 `test_totals_match_spreadsheet_table8` 與
 `test_every_fuel_matches_the_spreadsheet`：**程式與試算表算出同一個數字**。
 試算表那邊是 Excel 公式，程式這邊是 Python，兩條路徑完全獨立。
@@ -235,19 +248,20 @@ python scripts/extract_codes.py
 
 ## 測試的相依是分層的
 
-四個測試檔需要的東西不一樣，這是刻意的：
+五個測試檔需要的東西不一樣，這是刻意的：
 
 | 測試檔 | 需要 | 為什麼可以這麼輕 |
 |---|---|---|
 | `test_calculator.py` | 只要 pytest | 計算引擎是純函式 |
 | `test_seed.py` | ＋openpyxl | 讀試算表，但不寫任何檔案 |
 | `test_codes.py` | ＋openpyxl | 去重是純函式，其餘讀已進版控的 CSV |
-| `test_import_seed.py` | ＋SQLAlchemy | 唯一碰資料庫的一組，且建在記憶體裡 |
+| `test_import_seed.py` | ＋SQLAlchemy | 碰資料庫，但建在記憶體裡 |
+| `test_models.py` | ＋SQLAlchemy | 同上 |
 
 只跑不需要資料庫的三組（44 個）：
 
 ```bash
-python -m pytest tests/ -q --ignore=tests/test_import_seed.py
+python -m pytest tests/ -q --ignore=tests/test_import_seed.py --ignore=tests/test_models.py
 ```
 
 這個分層不是巧合，是設計的結果 —— 會安靜出錯的邏輯（單位換算、係數推導、欄位
@@ -286,7 +300,7 @@ KCAL_TO_TJ = 4.1868e-8
 ```
 
 再跑一次測試，應該會看到 **9 個測試失敗**（`test_calculator.py` 6 個、`test_seed.py`
-2 個、`test_import_seed.py` 1 個）。改回來後 62 個全部通過。
+2 個、`test_import_seed.py` 1 個）。改回來後 66 個全部通過。
 
 那第 9 個是 `test_factors_survive_the_round_trip` —— 它從資料庫的值重算係數，
 所以計算引擎改壞了它也跟著紅。這正是它存在的理由。
