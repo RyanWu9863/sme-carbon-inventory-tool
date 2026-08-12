@@ -46,15 +46,44 @@ _FUEL_TYPES = {EmissionType.STATIONARY, EmissionType.MOBILE}
 
 
 class ServiceError(RuntimeError):
-    """服務層拒絕計算。訊息要講清楚缺什麼、該怎麼補。"""
+    """
+    服務層拒絕計算。訊息要講清楚缺什麼、該怎麼補。
+
+    `code` 是給 API 層用的機器可讀標籤。HTTP 狀態碼分不出「係數還沒公告」跟
+    「係數編號打錯」的差別，但使用者該做的事完全不同 —— 一個是等，一個是改。
+    """
+
+    code = "service_error"
 
 
 class FactorNotFoundError(ServiceError):
-    pass
+    """找不到係數。通常是表三的「對應係數編號」打錯或種子資料沒匯入。"""
+
+    code = "factor_not_found"
+
+
+class FactorNotPublishedError(FactorNotFoundError):
+    """
+    政府還沒公告該年度的係數。
+
+    刻意繼承 FactorNotFoundError —— 對計算來說它就是查不到，既有的
+    `except FactorNotFoundError` 照樣接得住。但它不是任何人的錯，使用者唯一
+    能做的事是等，所以要分得出來。
+    """
+
+    code = "factor_not_published"
 
 
 class DataQualityError(ServiceError):
-    pass
+    """資料品質不合格，例如推估沒填依據。"""
+
+    code = "data_quality"
+
+
+class UnsupportedEmissionTypeError(ServiceError):
+    """製程、逸散、外購蒸汽目前不支援。"""
+
+    code = "unsupported_emission_type"
 
 
 @dataclass(frozen=True)
@@ -81,6 +110,9 @@ class YearSummary:
     measured_count: int = 0
     estimated_count: int = 0
     estimated_tco2e: float = 0.0
+    # 只在 stored_summary() 會 > 0：有活動數據但還沒算過排放量的筆數。
+    # 沒有這個欄位的話，「總量 0」與「還沒算」在輸出上長得一模一樣。
+    uncalculated_count: int = 0
     issues: list[CompletenessIssue] = field(default_factory=list)
     results: list[EmissionResult] = field(default_factory=list)
 
@@ -196,7 +228,7 @@ def resolve_electricity_factor(session: Session, year_roc: int) -> ElectricityFa
     available = sorted(
         y for (y,) in session.execute(select(ElectricityFactor.year_roc)).all())
     if available and year_roc > max(available):
-        raise FactorNotFoundError(
+        raise FactorNotPublishedError(
             f"{year_roc} 年度的電力排碳係數尚未公告（目前最新是 {max(available)} 年度）。"
             f"這不是程式或資料庫的問題 —— 能源署逐年公告，要等公告後才能盤查該年度。"
         )
@@ -293,7 +325,7 @@ def calculate_record(session: Session, record: ActivityRecord,
             "gwp_standard": "AR5",
         }
     else:
-        raise ServiceError(
+        raise UnsupportedEmissionTypeError(
             f"排放源 {source.source_no}「{source.name}」的排放型式是"
             f"「{source.emission_type.value}」，本系統目前只涵蓋固定燃燒、移動燃燒與"
             f"外購電力。不支援的型式一律報錯而不算成 0 —— 算成 0 會讓報告少一截"
@@ -332,12 +364,41 @@ def calculate_record(session: Session, record: ActivityRecord,
 # 算年度
 # --------------------------------------------------------------------------
 
-def calculate_year(session: Session, org: Organization) -> YearSummary:
-    """
-    算完一整年，彙總成表八。
+def _accumulate(summary: YearSummary, source: EmissionSource,
+                record: ActivityRecord, result: EmissionResult) -> None:
+    """把一筆結果加進彙總。單位由 kg 換成 t。"""
+    tonnes = result.total_co2e_kg / 1000.0
 
-    彙總依表三的「排放型式」拆分，而不是依燃料種類 —— 試算表把範疇一全掛在
-    「固定燃燒」，表八 B11 自己註明程式版該拆開，這裡就是做那件事的地方。
+    label = source.emission_type.value
+    summary.by_emission_type[label] = summary.by_emission_type.get(label, 0.0) + tonnes
+
+    summary.by_gas["CO2"] = summary.by_gas.get("CO2", 0.0) + result.co2_kg / 1000.0
+    summary.by_gas["CH4"] = summary.by_gas.get("CH4", 0.0) + result.ch4_co2e_kg / 1000.0
+    summary.by_gas["N2O"] = summary.by_gas.get("N2O", 0.0) + result.n2o_co2e_kg / 1000.0
+
+    if source.direct_indirect.value == "直接":
+        summary.scope1_tco2e += tonnes
+    else:
+        summary.scope2_tco2e += tonnes
+
+    if record.data_quality == DataQuality.ESTIMATED:
+        summary.estimated_count += 1
+        summary.estimated_tco2e += tonnes
+    else:
+        summary.measured_count += 1
+
+    summary.results.append(result)
+
+
+def _collect(session: Session, org: Organization, *, recalculate: bool) -> YearSummary:
+    """
+    彙總一整年，依表三的「排放型式」拆分。
+
+    試算表把範疇一全掛在「固定燃燒」，表八 B11 自己註明程式版該拆開，
+    這裡就是做那件事的地方。
+
+    `recalculate=False` 時只讀已存在的 `EmissionResult`，一個字都不寫 ——
+    API 的 GET 端點靠它，讓查詢不會偷偷改資料庫。
     """
     sources = session.scalars(
         select(EmissionSource).where(EmissionSource.org_id == org.id)
@@ -358,28 +419,14 @@ def calculate_year(session: Session, org: Organization) -> YearSummary:
             continue
 
         for record in records:
-            result = calculate_record(session, record, org)
-            summary.results.append(result)
-
-            tonnes = result.total_co2e_kg / 1000.0
-            label = source.emission_type.value
-            summary.by_emission_type[label] = (
-                summary.by_emission_type.get(label, 0.0) + tonnes)
-
-            summary.by_gas["CO2"] = summary.by_gas.get("CO2", 0.0) + result.co2_kg / 1000.0
-            summary.by_gas["CH4"] = summary.by_gas.get("CH4", 0.0) + result.ch4_co2e_kg / 1000.0
-            summary.by_gas["N2O"] = summary.by_gas.get("N2O", 0.0) + result.n2o_co2e_kg / 1000.0
-
-            if source.direct_indirect.value == "直接":
-                summary.scope1_tco2e += tonnes
+            if recalculate:
+                result = calculate_record(session, record, org)
             else:
-                summary.scope2_tco2e += tonnes
-
-            if record.data_quality == DataQuality.ESTIMATED:
-                summary.estimated_count += 1
-                summary.estimated_tco2e += tonnes
-            else:
-                summary.measured_count += 1
+                result = record.result
+                if result is None:
+                    summary.uncalculated_count += 1
+                    continue
+            _accumulate(summary, source, record, result)
 
     summary.total_tco2e = summary.scope1_tco2e + summary.scope2_tco2e
     summary.issues = check_completeness(
@@ -387,6 +434,21 @@ def calculate_year(session: Session, org: Organization) -> YearSummary:
         periods, org.year_start, org.year_end,
     )
     return summary
+
+
+def calculate_year(session: Session, org: Organization) -> YearSummary:
+    """算完一整年並寫回 EmissionResult，回傳表八所需的數字。"""
+    return _collect(session, org, recalculate=True)
+
+
+def stored_summary(session: Session, org: Organization) -> YearSummary:
+    """
+    只讀已經算好的結果，不重算也不寫入。
+
+    分成兩個函式而不是一個帶旗標的公開 API，是因為呼叫端最該一眼看出來的
+    就是「這個會不會寫資料庫」。`uncalculated_count` 會告訴你有幾筆還沒算。
+    """
+    return _collect(session, org, recalculate=False)
 
 
 def format_summary(summary: YearSummary) -> str:

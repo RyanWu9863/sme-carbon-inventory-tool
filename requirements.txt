@@ -1,8 +1,23 @@
-# 執行單元測試只需要這一個
+# 套件按「哪一層需要它」分組。這個分層不是整理癖 —— 計算引擎不依賴資料庫、
+# 資料庫層不依賴 web 框架，所以下面每一段都可以單獨安裝、單獨測試。
+# 被問「你怎麼確保計算正確」時，這張清單本身就是答案的一部分。
+
+# --- 計算引擎 app/calculator.py ---
+# 純函式，只需要 pytest 就能測
 pytest>=8.0
 
-# 讀取 碳盤查試算表_v5.xlsx，種子資料的來源（app/seed.py）
+# --- 種子資料 app/seed.py、scripts/extract_codes.py ---
+# 讀 碳盤查試算表_v5.xlsx。代碼表的 .ods 是自己解 XML，不需要額外套件
 openpyxl>=3.1
 
-# 建立資料表 / 使用 models.py 才需要
+# --- 資料庫 app/models.py、app/service.py ---
 SQLAlchemy>=2.0
+
+# --- HTTP API app/api.py ---
+fastapi>=0.115
+uvicorn[standard]>=0.32
+
+# --- 只有 tests/test_api.py 需要 ---
+# starlette 的 TestClient 用它送請求。裝 httpx（舊版）也能跑，但會有
+# deprecation 警告
+httpx2>=2.10

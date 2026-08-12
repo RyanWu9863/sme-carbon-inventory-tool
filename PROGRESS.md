@@ -2,7 +2,7 @@
 
 換一台電腦接著做時，先讀這一份。程式怎麼裝、怎麼跑在 [README.md](README.md)。
 
-最後更新：2026-08-12（種子資料已進資料庫，86 個測試全綠）
+最後更新：2026-08-12（種子資料已進資料庫，110 個測試全綠）
 
 ---
 
@@ -13,7 +13,7 @@ git clone https://github.com/RyanWu9863/sme-carbon-inventory-tool.git
 cd sme-carbon-inventory-tool
 python -m venv .venv && .venv\Scripts\activate (PowerShell: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process; .venv\Scripts\Activate.ps1)
 pip install -r requirements.txt
-python -m pytest tests/ -q          # 應該看到 86 passed
+python -m pytest tests/ -q          # 應該看到 110 passed
 python scripts/import_seed.py       # 建 carbon.db 並匯入種子資料
 ```
 
@@ -25,7 +25,7 @@ python scripts/import_seed.py       # 建 carbon.db 並匯入種子資料
 | `溫室氣體排放量清冊表單(範例).ods` | 916 KB 官方原檔，且內嵌原始製表者的內部路徑 | **沒差了**，代碼表已抽成 CSV 進版控 |
 
 **兩個都不再擋路。** 上一版寫「.ods 少了下一步做不了」，那件事已經做完 —— 代碼表
-7,603 筆在 `data/codes/`，86 個測試在沒有 .ods 的機器上照樣全綠。.ods 只有官方
+7,603 筆在 `data/codes/`，110 個測試在沒有 .ods 的機器上照樣全綠。.ods 只有官方
 改版、要重抽代碼表時才需要。
 
 ---
@@ -60,9 +60,9 @@ python scripts/calc_demo.py      → 7.531736 tCO2e
 | `scripts/import_seed.py` — 代碼表＋係數 → `carbon.db`，可重複執行 | ✅ |
 | `scripts/load_demo.py` — 示範案例，選配 | ✅ |
 | `scripts/calc_demo.py` — 算年度並印出表八 | ✅ |
-| `tests/` — 86 個測試，全綠 | ✅ |
-| API | ❌ **下一步**，服務層做完後只是薄薄一層 |
-| 使用者介面 | ❌ |
+| `app/api.py` — 10 個端點，附 Swagger UI | ✅ |
+| `tests/` — 110 個測試，全綠 | ✅ |
+| 使用者介面 | ❌ **下一步** |
 | 報表與 Excel 匯出 | ❌ |
 
 **7.531736 現在有兩條獨立路徑算得出來**：純函式
@@ -285,6 +285,50 @@ A 空白、B 有名稱         分頁自己的小計列    第 33~35 列
 （尾端有一列說明文字），改用「遇到整列空白就停」，再回頭檢查後面還有沒有漏網的
 排放源 —— 否則清單中間被插一列空白就會靜靜截斷。
 
+### HTTP API
+
+`app/api.py` + `tests/test_api.py`（新增 24 個測試，累計 110 個）。
+
+```bash
+uvicorn app.api:app --reload      # → http://127.0.0.1:8000/docs
+```
+
+10 個端點。這一層刻意很薄 —— 所有判斷都在 `service.py`，API 只做三件事：
+把請求轉成服務層呼叫、把 ORM 轉成 JSON、把例外轉成 HTTP 回應。裡面沒有一行計算。
+
+**三個設計決定：**
+
+1. **GET 不寫資料庫。** 原本想把「算」跟「看」合在 `GET /summary` 裡，很方便 ——
+   但那表示每次重新整理報表頁都在改 `calculated_at`，而那正是稽核要看的欄位。
+   拆成 `POST /calculate`（算、寫）與 `GET /summary`（只讀）。為此把
+   `calculate_year` 拆出 `stored_summary`，兩個獨立的公開函式而不是一個帶旗標的
+   —— 呼叫端最該一眼看出來的就是「這個會不會寫資料庫」。
+
+   附帶要處理的：還沒算過時總量是 0，跟「真的排放 0」長得一樣。加了
+   `uncalculated_count` 讓兩者分得開。
+
+2. **錯誤帶機器可讀的 `code`。** HTTP 狀態碼分不出「係數還沒公告」跟「係數編號
+   打錯」，但前端該做的事完全不同 —— 一個顯示「等公告」，一個要跳到表三讓使用者
+   改。所以 `ServiceError` 加了 `code` 類別屬性，並拆出 `FactorNotPublishedError`
+   （刻意繼承 `FactorNotFoundError`，既有的 except 照樣接得住）與
+   `UnsupportedEmissionTypeError`。
+
+3. **新增單據就立刻計算，失敗則整筆回滾。** 推估沒填依據、跨年帳單標成實測、
+   係數查不到 —— 要在使用者還看著表單時就講，而不是等按下「產生報告」才一次爆出。
+   而留下一筆算不出結果的活動數據比擋下來更糟：它會出現在清冊上，卻永遠不進總量。
+
+**驗證方式**：除了 `TestClient`，也真的用 `uvicorn` 跑起來、用 `urllib` 打過一輪，
+確認 Swagger UI 出得來、中文查詢參數（URL 編碼後）搜得到、422 那一筆確實沒在真的
+`carbon.db` 留下殘骸。做過突變測試，四個都抓到：GET 改成會寫入、失敗不回滾、
+搜尋不回報截斷、錯誤 code 退回泛用值。
+
+**`requirements.txt` 改成按層次分組。** 計算引擎只要 pytest、種子資料加 openpyxl、
+資料庫加 SQLAlchemy、API 才加 fastapi。這個分層是這個專案刻意維持的性質，清單
+本身就是「你怎麼確保計算正確」的一部分答案。
+
+（`httpx2` 是 starlette 新版 `TestClient` 要的；裝舊的 `httpx` 也能跑，只是每次
+測試都會噴 deprecation 警告。）
+
 ---
 
 ## 這次確認的四件事
@@ -326,8 +370,8 @@ A 空白、B 有名稱         分頁自己的小計列    第 33~35 列
 | 1 | 代碼表抽成 CSV | W2② | ✅ 完成，7,603 筆在 `data/codes/` |
 | 1.5 | 種子資料寫進資料庫 | W2① | ✅ 完成，`scripts/import_seed.py` |
 | 2 | 服務層：資料庫 ↔ 計算引擎 | W2④ | ✅ 完成，從 DB 算出 7.531736 |
-| 3 | API | W2③ | **現在做**，服務層做完後只是薄薄一層 |
-| 4 | 最小可用介面：輸入到看見表八 | W3 | 核心 |
+| 3 | API | W2③ | ✅ 完成，10 個端點 |
+| 4 | 最小可用介面：輸入到看見表八 | W3 | **現在做**，核心 |
 | 5 | 報表與 Excel 匯出 | W7 | 核心 |
 | 6 | 電費單解析 | W4，可砍 | **升級為值得做**（省下的時間給它） |
 | 7 | 發票載具 CSV 匯入 | W5，可砍 | 用自己的載具，成本降低 |
@@ -345,31 +389,28 @@ A 空白、B 有名稱         分頁自己的小計列    第 33~35 列
 
 ## 下一步（可直接開工）
 
-~~1. 代碼表抽成 CSV~~　✅　~~2. `import_seed.py`~~　✅　~~3. 服務層~~　✅
+~~1. 代碼表抽成 CSV~~　✅　~~2. `import_seed.py`~~　✅　~~3. 服務層~~　✅　~~4. API~~　✅
 
-**API：`app/api.py`（FastAPI）。** `db.py` 的 `get_db()` 已經寫好依賴注入，
-服務層也把邏輯收乾淨了，這一層應該很薄。
+**最小可用介面：從輸入到看見表八。** 後端整條都通了，缺的是能給真人操作的東西 ——
+而「使用者測試」是路線圖裡兩個不可砍的項目之一，沒有介面就測不了。
 
-最小可用的一組端點：
+建議做法：**單一 HTML 檔 + fetch，由 FastAPI 直接 serve**，不要 React／Vue。理由是
+這個作品的重點在盤查邏輯與資料正確性，不在前端工程；一個 build step 都不加，
+demo 影片也好錄（開一個網址就能跑）。
 
-```
-GET  /orgs/{id}/summary          → YearSummary（表八）
-GET  /orgs/{id}/sources          → 表三清冊
-POST /orgs/{id}/records          → 新增一筆活動數據
-GET  /codes/material?q=汽油      → 代碼下拉選單（6,222 筆要能搜尋）
-```
+三個畫面就夠：
 
-三件要注意的：
+1. **排放源清冊**（表三）— 列出 `GET /orgs/{id}/sources`，顯示每個排放源有幾筆資料。
+   `record_count == 0` 要標紅，那正是完整性檢查會擋的。
+2. **輸入活動數據** — 選排放源 → 填期間與數量 → 送出。**推估時「推估依據」變必填**，
+   前端先擋一次（體驗），後端照樣擋（正確性）。422 回應要依 `code` 顯示不同訊息。
+3. **表八** — `GET /orgs/{id}/summary`，含範疇拆分、氣體別、資料品質、完整性警告。
+   `uncalculated_count > 0` 時顯示「尚未計算」而不是 0。
 
-- **`ServiceError` 要對應成合理的 HTTP 狀態。** `DataQualityError` 是使用者填錯
-  （422），`FactorNotFoundError` 分兩種：查不到係數編號是使用者的問題（400），
-  電力係數尚未公告則不是任何人的錯，訊息要照原樣傳給前端。
-- **代碼查詢要能搜尋。** 6,222 筆原燃物料代碼不可能做成下拉選單，要 `LIKE` 查詢
-  加上限筆數。
-- **`requirements.txt` 要加 fastapi 與 uvicorn。** 目前只有三個套件，測試層次分明
-  這件事要維持住 —— API 測試用 `TestClient`，不該讓計算引擎的測試也依賴 fastapi。
+一個要注意的：**代碼選單要用搜尋，不要下拉。** 6,222 筆原燃物料代碼塞進 `<select>`
+瀏覽器會卡死，用輸入框 + `GET /codes/material?q=` 即時查詢，並顯示 `truncated`。
 
-之後是介面（W3）與報表匯出（W7）。
+之後是報表與 Excel 匯出（W7），再來是使用者測試（W8）與 demo 影片（W9）。
 
 ---
 

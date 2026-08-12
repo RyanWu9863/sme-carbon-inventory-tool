@@ -18,6 +18,7 @@ carbon/                      ← 專案根目錄，名字隨你取
 │   ├── models.py
 │   ├── calculator.py        ← 純函式計算引擎
 │   ├── service.py           ← 資料庫 ↔ 計算引擎
+│   ├── api.py               ← HTTP API（FastAPI）
 │   └── seed.py
 ├── scripts/
 │   ├── __init__.py          ← 空檔案，但一定要有
@@ -37,7 +38,8 @@ carbon/                      ← 專案根目錄，名字隨你取
     ├── test_codes.py
     ├── test_import_seed.py
     ├── test_models.py
-    └── test_service.py
+    ├── test_service.py
+    └── test_api.py
 ```
 
 `__init__.py` 是三個**完全空白**的檔案，Python 靠它辨認資料夾是套件。漏了會出現
@@ -95,7 +97,7 @@ python -m pytest tests/ -v
 
 ```
 ======================== test session starts ========================
-collected 86 items
+collected 110 items
 
 tests/test_calculator.py::test_derived_factor_matches_spreadsheet[TW-M-GASOLINE-OXI-2.270679] PASSED
 tests/test_calculator.py::test_ch4_uses_28_not_30 PASSED
@@ -103,14 +105,14 @@ tests/test_calculator.py::test_ch4_uses_28_not_30 PASSED
 tests/test_seed.py::test_every_fuel_matches_the_spreadsheet PASSED
 tests/test_codes.py::test_v5_codes_agree_with_the_official_table[material_codes-material_code] PASSED
 tests/test_import_seed.py::test_factors_survive_the_round_trip PASSED
-======================== 86 passed in 7.78s =========================
+======================== 110 passed in 10.96s =========================
 ```
 
-**看到 `86 passed` 就對了。**
+**看到 `110 passed` 就對了。**
 
 只想看結果不看細節，把 `-v` 換成 `-q`。
 
-## 這 86 個測試在測什麼
+## 這 110 個測試在測什麼
 
 ### `test_calculator.py` — 計算引擎（17 個）
 
@@ -216,6 +218,25 @@ tests/test_import_seed.py::test_factors_survive_the_round_trip PASSED
 
 只有一條路徑時，測試測的是「程式跟自己一致」，那證明不了什麼。
 
+### `test_api.py` — HTTP API（24 個）
+
+| 測試 | 驗證的事 |
+|---|---|
+| `test_summary_matches_spreadsheet` | 7.531736 走完 HTTP 還是同一個數字 |
+| **`test_get_summary_does_not_write`** | **GET 不改資料庫，連時間戳記都不動** |
+| `test_summary_before_calculating_reports_pending` | 「還沒算」與「真的是 0」分得出來 |
+| `test_calculate_is_idempotent` | 重算不長出第二批結果 |
+| `test_add_record_calculates_immediately` | 新增就算，錯誤當場講 |
+| `test_estimated_without_basis_is_rejected_with_a_code` | 422 + `code: data_quality` |
+| **`test_failed_record_is_not_left_behind`** | **計算失敗時整筆回滾，不留孤兒** |
+| `test_cross_year_bill_marked_measured_is_rejected` | 跨年帳單標「實測」擋下 |
+| `test_health_on_empty_database_says_what_to_run` | 空資料庫講得出下一步指令 |
+| `test_search_reports_truncation` | 6,222 筆搜尋要回報有沒有被截斷 |
+| `test_factors_list_is_the_twelve_fuels` | 電力不混在燃料係數清單裡 |
+| 其餘 13 個 | 404／422 邊界、代碼搜尋、表三清冊 |
+
+用 `dependency_overrides` 把 `get_db` 換成記憶體資料庫，不會碰到你的 `carbon.db`。
+
 ## 建立資料表
 
 ```bash
@@ -304,6 +325,47 @@ python scripts/calc_demo.py
 少一張帳單，總量少一截，卻不會有任何錯誤訊息，除非有東西在檢查。這正是完整性
 檢查存在的理由，所以示範資料保留這個狀態。
 
+## 啟動 API
+
+```bash
+uvicorn app.api:app --reload
+```
+
+開 <http://127.0.0.1:8000/docs> 就是可以直接點來試的 Swagger UI。
+
+| 方法 | 路徑 | 用途 |
+|---|---|---|
+| GET | `/health` | 種子資料在不在，沒有的話告訴你跑哪個指令 |
+| GET | `/orgs` | 事業清單 |
+| GET | `/orgs/{id}/sources` | 表三 排放源清冊 |
+| GET | `/orgs/{id}/records` | 表四 活動數據 |
+| POST | `/orgs/{id}/sources/{source_no}/records` | 新增一筆單據，**立刻計算** |
+| GET | `/orgs/{id}/summary` | 表八，**唯讀** |
+| POST | `/orgs/{id}/calculate` | 重算整年並寫回 |
+| GET | `/codes/{kind}?q=…` | 代碼搜尋（process／equipment／material） |
+| GET | `/factors` | 12 個燃料係數，供表三下拉選單 |
+
+三個設計決定：
+
+**GET 不寫資料庫。** 把「算」跟「看」合在一個 GET 裡很方便，但那表示每次重新整理
+報表頁都在改 `calculated_at` —— 而那正是稽核要看的欄位。所以拆成 `POST /calculate`
+（算）與 `GET /summary`（看）。還沒算過的筆數在 `uncalculated_count`，因為
+「總量 0」跟「還沒算」在畫面上長得一模一樣。
+
+**錯誤帶機器可讀的 `code`。** HTTP 狀態碼分不出「係數還沒公告」跟「係數編號打錯」，
+但前端該做的事完全不同 —— 一個顯示「等公告」，一個要跳到表三讓使用者改：
+
+```json
+{"error": {"code": "data_quality", "message": "S04 廚房天然氣爐具… 標記為推估卻沒有填推估依據。"}}
+```
+
+`code` 目前有 `data_quality`、`factor_not_found`、`factor_not_published`、
+`unsupported_emission_type`。
+
+**新增單據就立刻計算，失敗則整筆不寫入。** 推估沒填依據、跨年帳單標成實測、係數查
+不到 —— 這些要在使用者還看著表單時就講。而留下一筆算不出結果的活動數據比擋下來更
+糟：它會出現在清冊上，卻永遠不進總量。
+
 ## 代碼表是怎麼來的
 
 `data/codes/*.csv` 是從官方「溫室氣體排放量清冊表單」的附表五～七抽出來的，
@@ -323,7 +385,7 @@ python scripts/extract_codes.py
 
 ## 測試的相依是分層的
 
-六個測試檔需要的東西不一樣，這是刻意的：
+七個測試檔需要的東西不一樣，這是刻意的：
 
 | 測試檔 | 需要 | 為什麼可以這麼輕 |
 |---|---|---|
@@ -333,15 +395,18 @@ python scripts/extract_codes.py
 | `test_import_seed.py` | ＋SQLAlchemy | 碰資料庫，但建在記憶體裡 |
 | `test_models.py` | ＋SQLAlchemy | 同上 |
 | `test_service.py` | ＋SQLAlchemy | 同上 |
+| `test_api.py` | ＋FastAPI＋httpx2 | 唯一需要 web 框架的一組 |
 
-只跑不需要資料庫的三組（44 個）：
+只跑不需要資料庫與 web 框架的三組（44 個）：
 
 ```bash
-python -m pytest tests/ -q --ignore=tests/test_import_seed.py --ignore=tests/test_models.py --ignore=tests/test_service.py
+python -m pytest tests/test_calculator.py tests/test_seed.py tests/test_codes.py -q
 ```
 
 這個分層不是巧合，是設計的結果 —— 會安靜出錯的邏輯（單位換算、係數推導、欄位
-對位、代碼去重、熱值去重）全部留在純函式裡，所以不必先有資料庫就測得動。
+對位、代碼去重、熱值去重）全部留在純函式裡，所以不必先有資料庫、更不必有 web
+框架就測得動。`requirements.txt` 也照這個分層排。
+
 被問「你怎麼確保計算正確」時，這點可以直接拿來講。
 
 ## 常見錯誤
@@ -375,12 +440,20 @@ KCAL_TO_TJ = 4.1868e-9
 KCAL_TO_TJ = 4.1868e-8
 ```
 
-再跑一次測試，應該會看到 **15 個測試失敗**（`test_calculator.py` 6 個、
-`test_service.py` 6 個、`test_seed.py` 2 個、`test_import_seed.py` 1 個）。
-改回來後 86 個全部通過。
+再跑一次測試，應該會看到 **19 個測試失敗**：
 
-`test_service.py` 也跟著紅，是因為它從資料庫算出來的總量會偏掉 —— 一個常數改壞，
-從純函式到最終報表整條鏈都會被抓到。這正是分層測試的用意。
+| 測試檔 | 失敗數 |
+|---|---:|
+| `test_calculator.py` | 6 |
+| `test_service.py` | 6 |
+| `test_api.py` | 4 |
+| `test_seed.py` | 2 |
+| `test_import_seed.py` | 1 |
+
+改回來後 110 個全部通過。
+
+**一個常數改壞，從純函式一路紅到 HTTP 回應。** 那正是分層測試的用意 —— 每一層都
+獨立對照試算表，所以錯誤在哪一層被引入都跑不掉。
 
 **測試通過不代表程式對，但改壞了測試卻沒失敗，就一定有問題。**
 這個小實驗可以錄進 demo，展示你的驗證機制是有效的。
