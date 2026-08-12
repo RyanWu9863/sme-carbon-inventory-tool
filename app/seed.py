@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,6 +34,7 @@ SHEET_FUEL = "燃料係數計算"
 SHEET_ELECTRICITY = "電力係數"
 SHEET_GWP = "GWP表"
 SHEET_CODE = "代碼表"
+SHEET_SOURCES = "資料來源與限制"
 
 # 「燃料係數計算」分頁的版面：標題在第 6 列，資料從第 7 列開始。
 FUEL_HEADER_ROW = 6
@@ -100,9 +103,29 @@ class CodeRow:
 
 
 @dataclass(frozen=True)
+class FactorSource:
+    """
+    這批係數出自哪一份公告。
+
+    FactorSet 靠它回答「這個數字是哪一版算的」—— models.py 的第三個設計
+    決策（計算結果做快照）沒有這些欄位就落空了。
+
+    一樣不手抄：出處寫在試算表「資料來源與限制」B4，那是報告要引用的
+    同一段文字，抄一份到 Python 常數裡遲早會跟它對不上。
+    """
+
+    announcement: str          # 溫室氣體排放係數
+    doc_no: str                # 環部授氣字第1139101231號
+    publish_date: dt.date      # 2024-02-05
+    publish_date_roc: str      # 113年2月5日
+    description: str           # B4 原文，整段留著供報告引用
+
+
+@dataclass(frozen=True)
 class SeedData:
     kcal_to_tj: float
     gwp_standard: str
+    factor_source: FactorSource
     fuels: list[FuelRow]
     electricity: list[ElectricityRow]
     gwp: list[GwpRow]
@@ -301,6 +324,61 @@ def _read_codes(wb) -> tuple[list[CodeRow], list[CodeRow], list[CodeRow]]:
     )
 
 
+def _read_factor_source(wb) -> FactorSource:
+    """
+    從「資料來源與限制」B4 讀出公告名稱、文號與公告日期。
+
+    B4 是一段給人看的敘述：
+
+        環境部 113年2月5日 環部授氣字第1139101231號公告「溫室氣體排放係數」
+        附表一。法源：溫室氣體排放量盤查登錄及查驗管理辦法第4條第2項第1款。
+
+    這裡從裡面挑出三樣結構化資料，整段原文也一併留著（description）——
+    報告要引用的是原文，資料庫要查詢的是結構化欄位，兩個都要。
+
+    抓不到就報錯。抓不到而給預設值，等於讓資料庫宣稱一份不存在的公告。
+    """
+    ws = wb[SHEET_SOURCES]
+    _check_header(ws, 4, {"A": "燃料排放係數"})
+
+    text = _required_text(ws["B4"].value, f"{SHEET_SOURCES}!B4 燃料排放係數來源")
+    flat = " ".join(text.split())
+
+    announcement = re.search(r"公告「([^」]+)」", flat)
+    doc_no = re.search(r"(環部授氣字第\d+號)", flat)
+    date = re.search(r"(\d{2,3})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日", flat)
+
+    missing = [
+        label for label, m in
+        (("公告名稱（「」框起來的部分）", announcement),
+         ("公告文號（環部授氣字第…號）", doc_no),
+         ("公告日期（民國年月日）", date))
+        if m is None
+    ]
+    if missing:
+        raise SeedFormatError(
+            f"{SHEET_SOURCES}!B4 找不到 {'、'.join(missing)}。\n"
+            f"實際內容：{flat[:120]}…\n"
+            f"這段文字是 FactorSet 的版本依據，格式改了就不能照原樣解讀。"
+        )
+
+    roc_year, month, day = (int(g) for g in date.groups())
+    try:
+        publish_date = dt.date(roc_year + 1911, month, day)
+    except ValueError as exc:
+        raise SeedFormatError(
+            f"{SHEET_SOURCES}!B4 的公告日期 {roc_year}年{month}月{day}日 不是有效日期"
+        ) from exc
+
+    return FactorSource(
+        announcement=announcement.group(1),
+        doc_no=doc_no.group(1),
+        publish_date=publish_date,
+        publish_date_roc=f"{roc_year}年{month}月{day}日",
+        description=flat,
+    )
+
+
 def read_seed(path: str | Path) -> SeedData:
     """讀取整份試算表。任何版面異常都在這裡拋 SeedFormatError。"""
     path = Path(path)
@@ -314,7 +392,8 @@ def read_seed(path: str | Path) -> SeedData:
     # 若試算表從未被 Excel 開啟過，快取值會是 None，_read_fuels 會明確報錯。
     wb = openpyxl.load_workbook(path, data_only=True, read_only=False)
     try:
-        missing = {SHEET_FUEL, SHEET_ELECTRICITY, SHEET_GWP, SHEET_CODE} - set(wb.sheetnames)
+        required = {SHEET_FUEL, SHEET_ELECTRICITY, SHEET_GWP, SHEET_CODE, SHEET_SOURCES}
+        missing = required - set(wb.sheetnames)
         if missing:
             raise SeedFormatError(f"試算表缺少分頁：{'、'.join(sorted(missing))}")
 
@@ -325,6 +404,7 @@ def read_seed(path: str | Path) -> SeedData:
         return SeedData(
             kcal_to_tj=kcal_to_tj,
             gwp_standard=gwp_standard,
+            factor_source=_read_factor_source(wb),
             fuels=fuels,
             electricity=electricity,
             gwp=_read_gwp(wb),

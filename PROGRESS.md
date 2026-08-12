@@ -2,7 +2,7 @@
 
 換一台電腦接著做時，先讀這一份。程式怎麼裝、怎麼跑在 [README.md](README.md)。
 
-最後更新：2026-08-12（代碼表已抽成 CSV，44 個測試全綠）
+最後更新：2026-08-12（種子資料已進資料庫，62 個測試全綠）
 
 ---
 
@@ -13,7 +13,8 @@ git clone https://github.com/RyanWu9863/sme-carbon-inventory-tool.git
 cd sme-carbon-inventory-tool
 python -m venv .venv && .venv\Scripts\activate (PowerShell: Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process; .venv\Scripts\Activate.ps1)
 pip install -r requirements.txt
-python -m pytest tests/ -q          # 應該看到 44 passed
+python -m pytest tests/ -q          # 應該看到 62 passed
+python scripts/import_seed.py       # 建 carbon.db 並匯入種子資料
 ```
 
 **兩個檔案不在版控裡**（USB 或雲端硬碟，不要傳進 repo）：
@@ -24,7 +25,7 @@ python -m pytest tests/ -q          # 應該看到 44 passed
 | `溫室氣體排放量清冊表單(範例).ods` | 916 KB 官方原檔，且內嵌原始製表者的內部路徑 | **沒差了**，代碼表已抽成 CSV 進版控 |
 
 **兩個都不再擋路。** 上一版寫「.ods 少了下一步做不了」，那件事已經做完 —— 代碼表
-7,603 筆在 `data/codes/`，44 個測試在沒有 .ods 的機器上照樣全綠。.ods 只有官方
+7,603 筆在 `data/codes/`，62 個測試在沒有 .ods 的機器上照樣全綠。.ods 只有官方
 改版、要重抽代碼表時才需要。
 
 ---
@@ -39,22 +40,26 @@ python -m pytest tests/ -q          # 應該看到 44 passed
 
 ## 現在做到哪
 
-計算引擎與資料模型是好的，但**兩者還沒接起來**。`calculator.py` 是純函式，`models.py` 是空的資料表，中間缺一層把資料庫裡的係數餵給計算引擎的服務層。
+**資料庫現在是滿的了。** 係數、熱值、電力、GWP、7,603 筆代碼表都在 `carbon.db` 裡，而且從資料庫的值重算 12 個係數與試算表逐位相同。還缺的是把資料庫接上計算引擎的服務層。
 
 | 元件 | 狀態 |
 |---|---|
 | `app/models.py` — 13 張表，對齊官方表一~表七、附表一/二/五~七 | ✅ |
 | `app/calculator.py` — 熱值換算、GWP 加總、跨期分攤、完整性檢查 | ✅ |
-| `app/seed.py` — 從 v5 試算表讀係數／熱值／電力／GWP／代碼表 | ✅ |
+| `app/seed.py` — 從 v5 試算表讀係數／熱值／電力／GWP／公告出處 | ✅ |
 | `scripts/extract_codes.py` — 官方 .ods → `data/codes/*.csv` | ✅ |
-| `tests/` — 44 個測試，全綠 | ✅ |
+| `scripts/import_seed.py` — 代碼表＋係數 → `carbon.db`，可重複執行 | ✅ |
+| `tests/` — 62 個測試，全綠 | ✅ |
 | 代碼表全量抽出（**7,603** 筆，非 7,639，見下） | ✅ |
-| 種子資料寫進資料庫 | ❌ 讀得出來，還沒寫進去 |
-| 服務層（資料庫 ↔ 計算引擎） | ❌ |
+| 種子資料寫進資料庫 | ✅ |
+| 服務層（資料庫 ↔ 計算引擎） | ❌ **下一步** |
 | API | ❌ |
 | 使用者介面 | ❌ |
 
 驗收基準：**7.531736 tCO2e**。目前是純函式算出這個數字（`test_totals_match_spreadsheet_table8`）；服務層做完後，要能從資料庫算出同一個數字。
+
+中間有一段已經打通了：`test_factors_survive_the_round_trip` 從資料庫讀係數與熱值、
+重算 12 個每單位係數，與試算表 U 欄一致（最大差 4.4e-16）。剩下的是活動數據那一半。
 
 ---
 
@@ -147,6 +152,34 @@ TW-M-GASOLINE-OXI       2.270679160320    2.270679160320   0.0e+00
 測試刻意設計成**不需要 .ods**：去重邏輯用自編假資料測，其餘測已進版控的 CSV。所以
 任何一台 clone 這個 repo 的電腦都跑得起來 —— 這正是把代碼表抽成 CSV 的目的。
 
+### 種子資料寫進資料庫
+
+`scripts/import_seed.py` + `tests/test_import_seed.py`（新增 18 個測試，共 62 個）。
+
+匯入結果：代碼表 1,023／358／6,222，GWP 4，公告版本 1，燃料係數 12，熱值 6，電力 2。
+
+**兩個驗收條件，都寫成測試了：**
+
+1. **跑兩次結果相同**（`test_running_twice_changes_nothing`）。不只驗筆數 —— 筆數
+   相同也可能是「刪掉再新增」。第二次跑的 tally 必須全部落在 unchanged。
+2. **從資料庫重算 12 個係數，與試算表 U 欄一致**（`test_factors_survive_the_round_trip`，
+   最大差 4.4e-16）。匯入時欄位對錯（CO2 寫進 CH4 欄）不會有任何錯誤訊息，資料庫
+   看起來完全正常，只是每個數字都錯。這是唯一擋得住的東西。實際做過突變測試確認
+   它會紅。
+
+**幾個決定：**
+
+- **upsert 而不是「刪掉重建」。** 刪掉重建會讓已算好的 `EmissionResult` 外鍵指向
+  消失的列，而且每跑一次 id 就換一輪 —— 快照就不再是快照。
+- **公告出處從試算表讀，不手抄。** 「資料來源與限制」B4 寫著「環境部 113年2月5日
+  環部授氣字第1139101231號公告」，`FactorSet.version` 直接用公告文號。文號本來就是
+  那一版的唯一識別，改版自然變成新的一筆，符合 models.py 的「改版＝新增一筆，永不
+  UPDATE 舊的」。為此在 `seed.py` 加了 `FactorSource`。
+- **`org_id` 有值的熱值絕不覆蓋。** 那是事業自填的資料，models.py 明講熱值是唯一
+  「使用者可以合法覆寫官方值」的東西。有測試守著。
+- **整批同一個 transaction，任一步失敗全部回滾。** 匯入到一半的資料庫比空的危險，
+  因為它看起來是能用的。
+
 ---
 
 ## 這次確認的四件事
@@ -186,8 +219,8 @@ TW-M-GASOLINE-OXI       2.270679160320    2.270679160320   0.0e+00
 | 順序 | 做什麼 | 原計畫 | 調整後 |
 |---|---|---|---|
 | 1 | 代碼表抽成 CSV | W2② | ✅ 完成，7,603 筆在 `data/codes/` |
-| 1.5 | 種子資料寫進資料庫 | W2① | **現在做** |
-| 2 | 服務層：資料庫 ↔ 計算引擎 | W2④ | 核心，驗收基準是從 DB 算出 7.531736 |
+| 1.5 | 種子資料寫進資料庫 | W2① | ✅ 完成，`scripts/import_seed.py` |
+| 2 | 服務層：資料庫 ↔ 計算引擎 | W2④ | **現在做**，驗收基準是從 DB 算出 7.531736 |
 | 3 | API | W2③ | 服務層做完後只是薄薄一層 |
 | 4 | 最小可用介面：輸入到看見表八 | W3 | 核心 |
 | 5 | 報表與 Excel 匯出 | W7 | 核心 |
@@ -207,24 +240,43 @@ TW-M-GASOLINE-OXI       2.270679160320    2.270679160320   0.0e+00
 
 ## 下一步（可直接開工）
 
-~~1. 從 .ods 抽出三張代碼表 → `data/codes/*.csv`~~　✅ 完成（7,603 筆，非 7,639）
+~~1. 從 .ods 抽出三張代碼表~~　✅ 完成（7,603 筆，非 7,639）
+~~2. `scripts/import_seed.py`~~　✅ 完成（可重複執行，係數往返一致）
 
-1. **`scripts/import_seed.py`**：先從 `data/codes/*.csv` 匯代碼表，再從 v5 試算表匯
-   係數／熱值／電力／GWP 到 `carbon.db`。要可重複執行（依自然鍵 upsert），跑兩次
-   結果相同。
-   - 匯入順序不能反：`PublishedFactor.material_code` 是指向 `MaterialCode` 的外鍵。
-   - 匯完驗筆數：`process_code` 1,023、`equipment_code` 358、`material_code` 6,222。
-   - `HeatingValue` 的去重問題見「待決事項」第 2 條，寫這支腳本時會撞到。
-2. 用 [DB Browser for SQLite](https://sqlitebrowser.org/) 打開 `carbon.db` 確認。
+**服務層：`app/service.py`（暫名）。** 這是整個專案的核心，缺的就是它。
 
-之後才是服務層。
+現在的狀態是兩頭都好、中間沒接：`calculator.py` 收的是攤平的 dataclass
+（`FuelFactorInput` + 熱值 + GWP dict），資料庫裡放的是 ORM 物件。服務層要做的事：
+
+1. **查係數**：給 `EmissionSource.factor_key` 與盤查年度，取出 `PublishedFactor`、
+   對應的 `HeatingValue`（事業自填優先於系統預設）、`GwpValue`，組成
+   `FuelFactorInput` 餵進 `derive_fuel_factor`。
+2. **算一筆活動數據**：`ActivityRecord` → 跨期分攤（`allocate_period`）→
+   `calculate_fuel` 或 `calculate_electricity` → 寫回 `EmissionResult`，**連同快照
+   欄位**（`heating_value_used`、`factor_set_version`、`ch4_gwp_used`、`calc_trace`）。
+3. **算整個年度**：彙總成表八，並跑 `check_completeness`。
+
+**驗收基準：把 v5「活動數據登錄」那幾筆餵進去，從資料庫算出 7.531736 tCO2e。**
+目前這個數字只有純函式算得出來（`test_totals_match_spreadsheet_table8`）。
+
+兩件要注意的：
+
+- **推估要強制填理由。** `ActivityRecord.estimation_basis` 在 models.py 註明「推估時
+  必填，由服務層強制」—— 資料庫沒有這個約束，是服務層的責任。跨期分攤後
+  `Allocation.quality_hint` 會回「推估」，那時就要擋。
+- **電力不可再乘 GWP。** 走 `calculate_electricity` 而非 `calculate_fuel`，且要依
+  盤查年度取係數。114 年度尚未公告，此時要給得出「政府還沒公告」而不是「查無資料」。
 
 ---
 
 ## 待決事項
 
 - **熱值假設**：天然氣目前用 NG1(消費面) 8,107 kcal/m³。熱值表四個天然氣數值最大差 48%，實務上應改用瓦斯公司費率公告的當期熱值。這是最大的未決假設，v5「資料來源與限制」第 3 條已揭露。
-- **`HeatingValue.factor_key` 的鍵怎麼定**：多個燃料列共用同一個熱值（汽油的固定／移動／三種技術別都是 7520 kcal/公升，原燃物料代碼都是 170001）。寫入資料庫時要依 `material_code` 去重，並檢查共用同一代碼的列其單位與熱值是否一致——不一致就是試算表自己打架，要明確報錯。
+- ~~**`HeatingValue.factor_key` 的鍵怎麼定**~~ → **已解決。** 依 `material_code` 去重，
+  12 個燃料列收斂成 6 筆；`factor_key` 也填 `material_code`。實際查過六組全部一致
+  （汽油四列都是 7,520 kcal/公升）。一致性檢查照樣寫進 `collapse_heating_values`，
+  不一致就報錯 —— 現在沒撞到不代表以後不會。自然鍵是 `(material_code, org_id)`，
+  `org_id` 為 None 才是系統預設，事業自填的不會被匯入蓋掉。
 - ~~**代碼表對不上小店實況**~~ → **已查證，而且現在的分類是錯的。**
   全量代碼表出來後查過 358 筆設備代碼：官方有 **`B001 燃氣台爐`**，那就是瓦斯爐；
   另有 `B002 燃氣熱水器`。當初查不到是因為只看了 v5 手挑的 9 筆子集，不是官方沒有。

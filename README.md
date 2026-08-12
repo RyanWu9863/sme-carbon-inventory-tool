@@ -20,7 +20,8 @@ carbon/                      ← 專案根目錄，名字隨你取
 │   └── seed.py
 ├── scripts/
 │   ├── __init__.py          ← 空檔案，但一定要有
-│   └── extract_codes.py     ← 一次性工具，代碼表已抽好，平常不必跑
+│   ├── extract_codes.py     ← 一次性工具，代碼表已抽好，平常不必跑
+│   └── import_seed.py       ← 把種子資料寫進 carbon.db
 ├── data/codes/              ← 官方代碼表，7,603 筆，已進版控
 │   ├── process_code.csv
 │   ├── equipment_code.csv
@@ -30,7 +31,8 @@ carbon/                      ← 專案根目錄，名字隨你取
     ├── __init__.py          ← 空檔案，但一定要有
     ├── test_calculator.py
     ├── test_seed.py
-    └── test_codes.py
+    ├── test_codes.py
+    └── test_import_seed.py
 ```
 
 `__init__.py` 是三個**完全空白**的檔案，Python 靠它辨認資料夾是套件。漏了會出現
@@ -88,21 +90,22 @@ python -m pytest tests/ -v
 
 ```
 ======================== test session starts ========================
-collected 44 items
+collected 62 items
 
 tests/test_calculator.py::test_derived_factor_matches_spreadsheet[TW-M-GASOLINE-OXI-2.270679] PASSED
 tests/test_calculator.py::test_ch4_uses_28_not_30 PASSED
 ...
 tests/test_seed.py::test_every_fuel_matches_the_spreadsheet PASSED
 tests/test_codes.py::test_v5_codes_agree_with_the_official_table[material_codes-material_code] PASSED
-======================== 44 passed in 1.13s =========================
+tests/test_import_seed.py::test_factors_survive_the_round_trip PASSED
+======================== 62 passed in 7.05s =========================
 ```
 
-**看到 `44 passed` 就對了。**
+**看到 `62 passed` 就對了。**
 
 只想看結果不看細節，把 `-v` 換成 `-q`。
 
-## 這 44 個測試在測什麼
+## 這 62 個測試在測什麼
 
 ### `test_calculator.py` — 計算引擎（17 個）
 
@@ -150,6 +153,24 @@ tests/test_codes.py::test_v5_codes_agree_with_the_official_table[material_codes-
 
 **這一組不需要官方 .ods**：去重邏輯用自編假資料測，其餘測已進版控的 CSV。
 
+### `test_import_seed.py` — 種子資料匯入（18 個）
+
+| 測試 | 驗證的事 |
+|---|---|
+| **`test_factors_survive_the_round_trip`** | **從資料庫重算 12 個係數，仍與試算表 U 欄一致** |
+| **`test_running_twice_changes_nothing`** | **跑兩次結果相同，且第二次完全沒有新增／更新** |
+| `test_row_counts` ×8 | 八張表的筆數（1,023／358／6,222／4／1／12／6／2） |
+| `test_no_orphan_foreign_keys` | 係數指到的原燃物料代碼都真的存在 |
+| `test_shared_material_code_collapses_to_one_heating_value` | 12 個燃料列 → 6 筆熱值 |
+| `test_conflicting_heating_values_are_refused` | 同代碼卻兩組熱值時報錯，不任選一筆 |
+| `test_factor_set_records_the_announcement` | 公告文號與日期有記進資料庫 |
+| `test_fuel_combustion_still_uses_methane_28` | 資料庫端也守住 28 |
+| `test_unpublished_electricity_year_is_not_in_the_database` | 114 年度不會憑空出現 |
+| `test_user_override_heating_values_are_not_touched` | 匯入不蓋掉事業自填的熱值 |
+| `test_missing_code_csv_says_how_to_regenerate` | 少了 CSV 時說明怎麼重新產生 |
+
+**這一組建的是記憶體資料庫**（`sqlite:///:memory:`），不會碰到你手上的 `carbon.db`。
+
 兩個最重要的是 `test_totals_match_spreadsheet_table8` 與
 `test_every_fuel_matches_the_spreadsheet`：**程式與試算表算出同一個數字**。
 試算表那邊是 Excel 公式，程式這邊是 Python，兩條路徑完全獨立。
@@ -162,10 +183,38 @@ python check_schema.py
 
 預期輸出 `成功建立 13 張資料表`，並在目錄下產生 `carbon.db`。
 
-想用視覺化工具檢視這個檔案，可以裝
+## 匯入種子資料
+
+```bash
+python scripts/import_seed.py
+```
+
+把官方代碼表（`data/codes/*.csv`）與係數／熱值／電力／GWP（v5 試算表）寫進
+`carbon.db`。不必先跑 `check_schema.py`，這支會自己建表。
+
+預期輸出：
+
+```
+公告：溫室氣體排放係數　環部授氣字第1139101231號（113年2月5日）
+GWP ：AR5
+
+  製程代碼          1,023 筆    新增 1,023   更新    0
+  設備代碼            358 筆    新增   358   更新    0
+  原(燃)物料代碼    6,222 筆    新增 6,222   更新    0
+  GWP                   4 筆    新增     4   更新    0
+  公告版本              1 筆    新增     1   更新    0
+  燃料係數             12 筆    新增    12   更新    0
+  燃料熱值              6 筆    新增     6   更新    0
+  電力係數              2 筆    新增     2   更新    0
+```
+
+**再跑一次應該全部顯示「無變動」** —— 這支腳本依自然鍵 upsert，可重複執行。
+會這樣設計是因為刪掉重建會讓已算好的 `EmissionResult` 外鍵指向消失的列。
+
+想用視覺化工具檢視 `carbon.db`，可以裝
 [DB Browser for SQLite](https://sqlitebrowser.org/)（免費）。
 
-重建資料庫：刪掉 `carbon.db` 再跑一次即可。
+重建資料庫：刪掉 `carbon.db` 再跑一次 `import_seed.py` 即可。
 
 ## 代碼表是怎麼來的
 
@@ -184,19 +233,26 @@ python scripts/extract_codes.py
 它會印出各表筆數與去重明細，並更新 `data/codes/README.md`。
 版面對不上、序號跳號、同代碼卻不同名稱，都會直接拋錯而不是產出半套資料。
 
-## 只想跑測試的話
+## 測試的相依是分層的
 
-三個測試檔都**不碰資料庫**，所以不用裝 SQLAlchemy：
+四個測試檔需要的東西不一樣，這是刻意的：
+
+| 測試檔 | 需要 | 為什麼可以這麼輕 |
+|---|---|---|
+| `test_calculator.py` | 只要 pytest | 計算引擎是純函式 |
+| `test_seed.py` | ＋openpyxl | 讀試算表，但不寫任何檔案 |
+| `test_codes.py` | ＋openpyxl | 去重是純函式，其餘讀已進版控的 CSV |
+| `test_import_seed.py` | ＋SQLAlchemy | 唯一碰資料庫的一組，且建在記憶體裡 |
+
+只跑不需要資料庫的三組（44 個）：
 
 ```bash
-pip install pytest openpyxl
-python -m pytest tests/ -q
+python -m pytest tests/ -q --ignore=tests/test_import_seed.py
 ```
 
-`test_calculator.py` 只 import `calculator.py`；`test_seed.py` 與 `test_codes.py`
-另外要 `openpyxl` 來讀試算表。這不是巧合，是設計的結果 —— 計算引擎寫成純函式、
-種子資料讀取不寫任何檔案、代碼表抽取的去重邏輯也是純函式，全都不依賴資料庫，
-所以可以獨立測試。被問「你怎麼確保計算正確」時，這點可以直接拿來講。
+這個分層不是巧合，是設計的結果 —— 會安靜出錯的邏輯（單位換算、係數推導、欄位
+對位、代碼去重、熱值去重）全部留在純函式裡，所以不必先有資料庫就測得動。
+被問「你怎麼確保計算正確」時，這點可以直接拿來講。
 
 ## 常見錯誤
 
@@ -229,8 +285,11 @@ KCAL_TO_TJ = 4.1868e-9
 KCAL_TO_TJ = 4.1868e-8
 ```
 
-再跑一次測試，應該會看到 **8 個測試失敗**（`test_calculator.py` 6 個、`test_seed.py`
-2 個）。改回來後 44 個全部通過。
+再跑一次測試，應該會看到 **9 個測試失敗**（`test_calculator.py` 6 個、`test_seed.py`
+2 個、`test_import_seed.py` 1 個）。改回來後 62 個全部通過。
+
+那第 9 個是 `test_factors_survive_the_round_trip` —— 它從資料庫的值重算係數，
+所以計算引擎改壞了它也跟著紅。這正是它存在的理由。
 
 **測試通過不代表程式對，但改壞了測試卻沒失敗，就一定有問題。**
 這個小實驗可以錄進 demo，展示你的驗證機制是有效的。
